@@ -2,10 +2,11 @@ FROM node:20-alpine as build
 ARG VITE_API_BASE
 ENV VITE_API_BASE=${VITE_API_BASE}
 WORKDIR /app
-COPY app/frontend/package.json ./
+# Copy only frontend files when the build context is app/frontend
+COPY package.json ./
 # Install deps; tolerate absence of lockfile
 RUN npm i
-COPY app/frontend ./
+COPY . ./
 RUN npm run build
 
 FROM nginx:alpine
