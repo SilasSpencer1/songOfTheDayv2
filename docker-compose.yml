@@ -1,0 +1,31 @@
+version: "3.9"
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: app/backend/Dockerfile
+    environment:
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
+      - SPOTIFY_REDIRECT_URI=${SPOTIFY_REDIRECT_URI}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - APP_BASE_URL=${APP_BASE_URL:-http://127.0.0.1:5173}
+      - DATABASE_PATH=/data/data.db
+    volumes:
+      - backend_data:/data
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: app/frontend/Dockerfile
+      args:
+        VITE_API_BASE: ${VITE_API_BASE:-http://127.0.0.1:8000}
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  backend_data:
