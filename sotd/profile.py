@@ -18,7 +18,7 @@ def get_user_profile(
     top_artists_limit: int = 10,
     top_tracks_limit: int = 20,
     recently_played_limit: int = 50,
-    saved_tracks_limit: int = 50,
+    saved_tracks_limit: int = 150,
     time_range: str = "short_term",
 ) -> Dict[str, Any]:
     """
@@ -44,19 +44,23 @@ def get_user_profile(
             }
         )
 
-    # Top tracks
-    tt_resp = sp.current_user_top_tracks(limit=top_tracks_limit, time_range=time_range)
-    top_tracks = []
-    for track in (tt_resp or {}).get("items", []):
-        artists = track.get("artists", []) or []
-        top_tracks.append(
-            {
-                "id": track.get("id"),
-                "name": track.get("name"),
-                "artist_ids": _extract_artist_ids(artists),
-                "artist_names": _extract_artist_names(artists),
-            }
-        )
+    # Top tracks (merge short/medium/long to strengthen known set)
+    top_tracks: List[Dict[str, Any]] = []
+    for tr in ("short_term", "medium_term", "long_term"):
+        try:
+            tt_resp = sp.current_user_top_tracks(limit=top_tracks_limit, time_range=tr)
+            for track in (tt_resp or {}).get("items", []):
+                artists = track.get("artists", []) or []
+                top_tracks.append(
+                    {
+                        "id": track.get("id"),
+                        "name": track.get("name"),
+                        "artist_ids": _extract_artist_ids(artists),
+                        "artist_names": _extract_artist_names(artists),
+                    }
+                )
+        except Exception:
+            continue
 
     # Recently played
     rp_resp = sp.current_user_recently_played(limit=recently_played_limit)
@@ -74,23 +78,33 @@ def get_user_profile(
             }
         )
 
-    # Saved tracks (optional; degrade gracefully on 403)
-    saved_tracks = []
+    # Saved tracks (optional; degrade gracefully on 403), page up to saved_tracks_limit
+    saved_tracks: List[Dict[str, Any]] = []
     try:
-        st_resp = sp.current_user_saved_tracks(limit=saved_tracks_limit)
-        for item in (st_resp or {}).get("items", []) or []:
-            track = (item or {}).get("track") or {}
-            artists = track.get("artists", []) or []
-            saved_tracks.append(
-                {
-                    "id": track.get("id"),
-                    "name": track.get("name"),
-                    "artist_ids": _extract_artist_ids(artists),
-                    "artist_names": _extract_artist_names(artists),
-                }
-            )
+        remaining = saved_tracks_limit
+        offset = 0
+        page_size = 50
+        while remaining > 0:
+            limit = min(page_size, remaining)
+            st_resp = sp.current_user_saved_tracks(limit=limit, offset=offset)
+            items = (st_resp or {}).get("items", []) or []
+            if not items:
+                break
+            for item in items:
+                track = (item or {}).get("track") or {}
+                artists = track.get("artists", []) or []
+                saved_tracks.append(
+                    {
+                        "id": track.get("id"),
+                        "name": track.get("name"),
+                        "artist_ids": _extract_artist_ids(artists),
+                        "artist_names": _extract_artist_names(artists),
+                    }
+                )
+            fetched = len(items)
+            remaining -= fetched
+            offset += fetched
     except Exception:
-        # Proceed without saved-track info
         saved_tracks = []
 
     # Known sets
@@ -131,6 +145,7 @@ def get_user_profile(
         "top_artists": top_artists,
         "top_tracks": top_tracks,
         "recent_tracks": recent_tracks,
+        "saved_tracks": saved_tracks,
         "known_artists": known_artists,
         "known_tracks": known_tracks,
         "top_artist_genres": top_artist_genres,

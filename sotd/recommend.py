@@ -12,30 +12,28 @@ from sotd.candidates import generate_candidates, filter_candidates_by_mood
 def _pick_one(track_ids: List[str]) -> Optional[str]:
     if not track_ids:
         return None
-    # Deterministic daily pick based on date for consistency
     rng = Random(date.today().isoformat())
     return rng.choice(track_ids)
 
 
 def song_of_the_day(sp, mood: Optional[str] = None) -> None:
-    """
-    Build user profile, generate candidates, apply optional mood filtering, pick one, and print details.
-    """
     profile = get_user_profile(sp)
+
+    # Build candidates and enforce strict novelty
     candidates = generate_candidates(sp, profile)
+    candidates = [tid for tid in candidates if tid not in profile.get("known_tracks", set())]
 
-    if not candidates:
-        print("No candidates found today. Try again later or widen your listening history.")
-        return
+    # Apply mood if provided; take top 10 after mood ranking
+    if mood:
+        ranked = filter_candidates_by_mood(candidates, mood=mood, top_k=10)
+    else:
+        ranked = candidates[:10]
 
-    filtered = filter_candidates_by_mood(candidates, mood=mood) if mood else candidates
-    track_id = _pick_one(filtered) or _pick_one(candidates)
-
+    track_id = _pick_one(ranked) or _pick_one(candidates)
     if not track_id:
         print("No recommendation could be made today. Please try again later.")
         return
 
-    # Use catalog client to fetch track details
     cat = get_catalog_client()
     track = cat.track(track_id)
     name = track.get("name")

@@ -40,6 +40,7 @@ LOGIN_SCOPES = " ".join([
 # Cookie names
 SESSION_COOKIE = f"{APP_NAME}_sid"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
+COOKIE_SECURE = APP_BASE_URL.startswith("https://")
 
 # Database path
 DB_PATH_RAW = os.getenv("DATABASE_PATH", "./app/backend/app/data.db")
@@ -109,7 +110,6 @@ async def init_db() -> None:
 async def on_startup() -> None:
     await init_db()
 
-
 # Utilities
 
 def make_auth() -> SpotifyOAuth:
@@ -140,6 +140,12 @@ async def save_session(session_id: str, access: str, refresh: str, expires_in: i
             """,
             (session_id, access, refresh, expires_at, now),
         )
+        await db.commit()
+
+
+async def delete_session(session_id: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         await db.commit()
 
 
@@ -223,9 +229,28 @@ async def auth_callback(request: Request) -> Response:
         key=SESSION_COOKIE,
         value=session_id,
         httponly=True,
-        secure=False,
+        secure=COOKIE_SECURE,
         samesite="lax",
         max_age=COOKIE_MAX_AGE,
+        path="/",
+    )
+    return resp
+
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request) -> Response:
+    sid = request.cookies.get(SESSION_COOKIE)
+    if sid:
+        await delete_session(sid)
+    resp = JSONResponse({"ok": True})
+    # Expire the cookie
+    resp.set_cookie(
+        key=SESSION_COOKIE,
+        value="",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="lax",
+        max_age=0,
         path="/",
     )
     return resp
