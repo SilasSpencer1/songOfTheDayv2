@@ -42,8 +42,32 @@ SESSION_COOKIE = f"{APP_NAME}_sid"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 
 # Database path
-DB_PATH = os.getenv("DATABASE_PATH", "./app/backend/app/data.db")
+DB_PATH_RAW = os.getenv("DATABASE_PATH", "./app/backend/app/data.db")
 
+
+def _resolve_db_path(raw_path: str) -> str:
+    # Expand env and user
+    path = os.path.expanduser(os.path.expandvars(raw_path))
+    dir_path = os.path.dirname(path) or "."
+    try:
+        os.makedirs(dir_path, exist_ok=True)
+        # Touch the file if not exists to verify permissions
+        if not os.path.exists(path):
+            with open(path, "a"):
+                pass
+        return path
+    except Exception:
+        # Fallback to /tmp if not writable
+        tmp_path = "/tmp/sotd_data.db"
+        tmp_dir = os.path.dirname(tmp_path)
+        os.makedirs(tmp_dir, exist_ok=True)
+        if not os.path.exists(tmp_path):
+            with open(tmp_path, "a"):
+                pass
+        return tmp_path
+
+
+DB_PATH = _resolve_db_path(DB_PATH_RAW)
 
 app = FastAPI(title="Song of the Day API")
 app.add_middleware(
