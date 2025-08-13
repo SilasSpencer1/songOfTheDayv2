@@ -46,6 +46,8 @@ LOGIN_SCOPES = " ".join([
 SESSION_COOKIE = f"{APP_NAME}_sid"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 COOKIE_SECURE = APP_BASE_URL.startswith("https://")
+# Use SameSite=None for cross-site (production, https), Lax for local dev
+COOKIE_SAMESITE = "none" if COOKIE_SECURE else "lax"
 
 # Database path
 DB_PATH_RAW = os.getenv("DATABASE_PATH", "./app/backend/app/data.db")
@@ -83,6 +85,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Ensure no proxy/CDN caches personalized responses; vary on Cookie
+@app.middleware("http")
+async def no_cache_for_auth_and_api(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith(("/auth", "/api")):
+        response.headers["Cache-Control"] = "no-store, private, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        # Make sure caches/proxies separate by Cookie
+        existing_vary = response.headers.get("Vary")
+        if existing_vary:
+            if "Cookie" not in existing_vary:
+                response.headers["Vary"] = existing_vary + ", Cookie"
+        else:
+            response.headers["Vary"] = "Cookie"
+    return response
 
 
 async def init_db() -> None:
@@ -259,7 +279,7 @@ async def auth_callback(request: Request) -> Response:
         value=session_id,
         httponly=True,
         secure=COOKIE_SECURE,
-        samesite="lax",
+        samesite=COOKIE_SAMESITE,
         max_age=COOKIE_MAX_AGE,
         path="/",
     )
@@ -278,7 +298,7 @@ async def auth_logout(request: Request) -> Response:
         value="",
         httponly=True,
         secure=COOKIE_SECURE,
-        samesite="lax",
+        samesite=COOKIE_SAMESITE,
         max_age=0,
         path="/",
     )
@@ -619,6 +639,7 @@ async def api_feedback(body: FeedbackBody, session=Depends(require_session)) -> 
     # Online update of logistic weights via simple gradient step
     # Use the features from the same logic in /api/recommend
     try:
+        from sotd.auth import get_catalog_client  # type: ignore
         cat = get_catalog_client()
         t = cat.track(body.track_id)
         desired_mood = (body.mood or "none").lower()
