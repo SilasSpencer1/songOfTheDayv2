@@ -133,8 +133,10 @@ export function App() {
               <MoodSelector mood={mood} onChange={setMood} />
             </div>
           </div>
-          <RecommendCard onRecommend={onRecommend} loading={loading} error={error} rec={rec} />
-          <Player rec={rec} premium={me.premium} />
+          <div className="glass fade-up" style={{ padding: 16 }}>
+            <RecommendCard onRecommend={onRecommend} loading={loading} error={error} rec={rec} />
+            <Player rec={rec} premium={me.premium} />
+          </div>
         </div>
       )}
       </div>
@@ -186,20 +188,22 @@ function RecommendCard({
   rec: RecommendPayload | null
 }) {
   return (
-    <div className="glass" style={{ padding: 16 }}>
-      <button onClick={onRecommend} disabled={loading} className="btn">
+    <div>
+      <button onClick={onRecommend} disabled={loading} className="btn fade-up">
         {loading ? 'Loading…' : 'Get Song of the Day'}
       </button>
       {error && <p style={{ color: 'red' }}>{error}</p>}
       {rec && (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ display: 'flex', gap: 12 }}>
+        <div style={{ marginTop: 16 }}>
+          <div className="hero-row">
             {rec.album_image_url && (
-              <img src={rec.album_image_url} width={120} height={120} style={{ objectFit: 'cover', borderRadius: 8 }} />
+              <div className="album-hero">
+                <img src={rec.album_image_url} alt={rec.name} />
+              </div>
             )}
-            <div>
-              <h2 style={{ margin: '4px 0' }}>{rec.name}</h2>
-              <p style={{ margin: 0 }}>{rec.artist}</p>
+            <div className="fade-up" style={{ minWidth: 240 }}>
+              <div className="subtitle">{rec.artist}</div>
+              <div className="title-xl">{rec.name}</div>
               <a href={rec.spotify_url} target="_blank" rel="noreferrer">Open in Spotify</a>
               <div style={{ marginTop:8, display:'flex', gap:8, flexWrap:'wrap' }}>
                 <LikeButtons rec={rec} />
@@ -317,18 +321,9 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
   // Fallbacks when SDK not available, not premium, or errors
   if (premium && sdkReady && !sdkError) {
     return (
-      <div className="glass" style={{ marginTop: 12, padding:16 }}>
+      <div className="fade-up" style={{ marginTop: 16 }}>
         <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
-          <button className="btn" onClick={async ()=>{
-            if (!rec || !deviceId) return
-            try {
-              await axios.post(`${API_BASE}/api/player/transfer`, { device_id: deviceId }, { withCredentials: true })
-              await axios.put(`${API_BASE}/api/player/play`, { device_id: deviceId, uris: [rec.track_uri] }, { withCredentials: true })
-            } catch {}
-          }}>Start</button>
           <button className="btn" onClick={()=>playerRef.current?.togglePlay()}>{sdkPaused ? '▶️ Play' : '⏸️ Pause'}</button>
-          <button className="btn" onClick={()=>playerRef.current?.previousTrack()}>⏮️ Prev</button>
-          <button className="btn" onClick={()=>playerRef.current?.nextTrack()}>⏭️ Next</button>
           <input type="range" min={0} max={sdkDuration||0} step={0.1} value={sdkProgress} onChange={(e)=>{ const t = parseFloat(e.target.value); setSdkProgress(t); try { playerRef.current?.seek(Math.floor(t*1000)) } catch {} }} style={{ flex:1 }} />
           <div style={{ minWidth:80, textAlign:'right' }}>{Math.floor(sdkProgress)} / {Math.max(1, Math.floor(sdkDuration))}s</div>
         </div>
