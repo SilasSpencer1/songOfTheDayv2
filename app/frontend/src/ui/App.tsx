@@ -229,9 +229,6 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
   const [deviceId, setDeviceId] = useState<string | null>(null)
   const [sdkReady, setSdkReady] = useState(false)
   const [sdkError, setSdkError] = useState<string | null>(null)
-  const playerRef = useRef<any>(null)
-  const [sdkPlaying, setSdkPlaying] = useState(false)
-  const [showFallback, setShowFallback] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [progress, setProgress] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -262,7 +259,6 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
           volume: 0.8,
         })
 
-        playerRef.current = player
         player.addListener('ready', ({ device_id }: any) => {
           setDeviceId(device_id)
         })
@@ -272,10 +268,6 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
         player.addListener('initialization_error', ({ message }: any) => setSdkError(message))
         player.addListener('authentication_error', ({ message }: any) => setSdkError(message))
         player.addListener('account_error', ({ message }: any) => setSdkError(message))
-        player.addListener('player_state_changed', (state: any) => {
-          if (!state) return
-          setSdkPlaying(!state.paused)
-        })
 
         player.connect()
       } catch (e: any) {
@@ -307,19 +299,10 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
     tryPlay()
   }, [rec, premium, deviceId])
 
-  // If SDK cannot start playback soon, fall back gracefully
-  useEffect(() => {
-    if (!premium || !sdkReady || !rec) return
-    const t = window.setTimeout(() => {
-      if (!sdkPlaying) setShowFallback(true)
-    }, 4000)
-    return () => window.clearTimeout(t)
-  }, [premium, sdkReady, sdkPlaying, rec])
-
   if (!rec) return null
 
   // Fallbacks when SDK not available, not premium, or errors
-  if (premium && sdkReady && !sdkError && !showFallback) {
+  if (premium && sdkReady && !sdkError) {
     return (
       <div style={{ marginTop: 12 }}>
         <p>Attempting playback via Web Playback SDK…</p>
