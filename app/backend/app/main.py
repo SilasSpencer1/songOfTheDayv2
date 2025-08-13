@@ -161,7 +161,7 @@ async def on_startup() -> None:
 
 # Utilities
 
-def make_auth() -> SpotifyOAuth:
+def make_auth(show_dialog: bool = False) -> SpotifyOAuth:
     if not (SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET and SPOTIFY_REDIRECT_URI):
         raise RuntimeError("Missing Spotify credentials in env")
     return SpotifyOAuth(
@@ -171,7 +171,7 @@ def make_auth() -> SpotifyOAuth:
         scope=LOGIN_SCOPES,
         cache_path=None,
         open_browser=False,
-        show_dialog=False,
+        show_dialog=show_dialog,
     )
 
 
@@ -249,8 +249,10 @@ async def require_session(request: Request) -> Dict[str, Any]:
 
 # Auth routes
 @app.get("/auth/login")
-async def auth_login() -> Response:
-    auth = make_auth()
+async def auth_login(request: Request) -> Response:
+    # If force=1, show Spotify login/consent dialog even if already signed-in
+    force = request.query_params.get("force") in {"1", "true", "True"}
+    auth = make_auth(show_dialog=bool(force))
     url = auth.get_authorize_url()  # type: ignore
     return RedirectResponse(url)
 

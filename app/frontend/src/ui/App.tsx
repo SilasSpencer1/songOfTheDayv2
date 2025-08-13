@@ -42,7 +42,8 @@ export function App() {
   }, [])
 
   const onLogin = () => {
-    window.location.href = `${API_BASE}/auth/login`
+    // Force a fresh Spotify auth dialog to avoid silently reusing a cached login
+    window.location.href = `${API_BASE}/auth/login?force=1`
   }
 
   const onRecommend = async () => {
