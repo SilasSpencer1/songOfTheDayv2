@@ -25,7 +25,8 @@ export function App() {
   const [rec, setRec] = useState<RecommendPayload | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [bgGrad, setBgGrad] = useState<string>('radial-gradient(800px 400px at 20% 10%, #1a2430 0%, transparent 60%), radial-gradient(600px 300px at 80% 90%, #2a1435 0%, transparent 60%)')
+  const [bgGrad, setBgGrad] = useState<string>('radial-gradient(800px 400px at 20% 10%, rgba(26,36,48,.7) 0%, rgba(0,0,0,0) 60%), radial-gradient(600px 300px at 80% 90%, rgba(42,20,53,.7) 0%, rgba(0,0,0,0) 60%)')
+  const [albumBg, setAlbumBg] = useState<string | null>(null)
   const [showAbout, setShowAbout] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
 
@@ -54,8 +55,9 @@ export function App() {
         { withCredentials: true }
       )
       setRec(res.data)
-      // Update background gradient from album image dominant colors (simple average)
+      // Update background gradient and blurred bg from album art (simple average color)
       if (res.data?.album_image_url) {
+        setAlbumBg(res.data.album_image_url)
         const img = new Image()
         img.crossOrigin = 'anonymous'
         img.src = res.data.album_image_url
@@ -93,9 +95,13 @@ export function App() {
   }
 
   return (
-    <div style={{ minHeight:'100%', background: bgGrad, transition:'background 600ms ease' }}>
+    <div style={{ minHeight:'100%', position: 'relative' }}>
+      {albumBg && (
+        <div style={{ position: 'fixed', inset: 0, backgroundImage: `url(${albumBg})`, backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(40px) saturate(120%)', opacity: .35, pointerEvents: 'none', zIndex: 0 }} />
+      )}
+      <div style={{ position: 'fixed', inset: 0, background: bgGrad, pointerEvents: 'none', zIndex: 0 }} />
       <div style={{ maxWidth: 960, margin: '0 auto', padding: 24 }}>
-        <div className="glass" style={{ padding:16, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+        <div className="glass" style={{ padding:16, display:'flex', alignItems:'center', justifyContent:'space-between', position: 'relative', zIndex: 1 }}>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
             <div style={{ width:36, height:36, borderRadius:10, background:'rgba(255,255,255,0.15)' }} />
             <h2 style={{ margin:0 }}>Song of the Day</h2>
@@ -106,13 +112,13 @@ export function App() {
           </div>
         </div>
         {showAbout && (
-          <div className="glass" style={{ padding:16, marginTop:12 }}>
+          <div className="glass" style={{ padding:16, marginTop:12, position: 'relative', zIndex: 1 }}>
             <h3 style={{ marginTop:0 }}>About</h3>
             <p>Daily, novel song picks based on your listening, mood, and your feedback. Privacy-friendly: tokens and logic run on the backend.</p>
           </div>
         )}
         {showSettings && (
-          <div className="glass" style={{ padding:16, marginTop:12, display:'flex', gap:8, flexWrap:'wrap' }}>
+          <div className="glass" style={{ padding:16, marginTop:12, display:'flex', gap:8, flexWrap:'wrap', position: 'relative', zIndex: 1 }}>
             <button className="btn" onClick={onLogout}>Log out</button>
             <button className="btn" onClick={onClearCache}>Clear cache</button>
           </div>
@@ -120,7 +126,7 @@ export function App() {
       {!me ? (
         <LoginGate onLogin={onLogin} />
       ) : (
-        <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:16, marginTop:16 }}>
+        <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:16, marginTop:16, position: 'relative', zIndex: 1 }}>
           <div className="glass" style={{ padding:16 }}>
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
               <div>Welcome, {me.display_name}</div>
@@ -223,6 +229,9 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
   const [deviceId, setDeviceId] = useState<string | null>(null)
   const [sdkReady, setSdkReady] = useState(false)
   const [sdkError, setSdkError] = useState<string | null>(null)
+  const playerRef = useRef<any>(null)
+  const [sdkPlaying, setSdkPlaying] = useState(false)
+  const [showFallback, setShowFallback] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [progress, setProgress] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -253,6 +262,7 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
           volume: 0.8,
         })
 
+        playerRef.current = player
         player.addListener('ready', ({ device_id }: any) => {
           setDeviceId(device_id)
         })
@@ -262,6 +272,10 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
         player.addListener('initialization_error', ({ message }: any) => setSdkError(message))
         player.addListener('authentication_error', ({ message }: any) => setSdkError(message))
         player.addListener('account_error', ({ message }: any) => setSdkError(message))
+        player.addListener('player_state_changed', (state: any) => {
+          if (!state) return
+          setSdkPlaying(!state.paused)
+        })
 
         player.connect()
       } catch (e: any) {
@@ -293,10 +307,19 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
     tryPlay()
   }, [rec, premium, deviceId])
 
+  // If SDK cannot start playback soon, fall back gracefully
+  useEffect(() => {
+    if (!premium || !sdkReady || !rec) return
+    const t = window.setTimeout(() => {
+      if (!sdkPlaying) setShowFallback(true)
+    }, 4000)
+    return () => window.clearTimeout(t)
+  }, [premium, sdkReady, sdkPlaying, rec])
+
   if (!rec) return null
 
   // Fallbacks when SDK not available, not premium, or errors
-  if (premium && sdkReady && !sdkError) {
+  if (premium && sdkReady && !sdkError && !showFallback) {
     return (
       <div style={{ marginTop: 12 }}>
         <p>Attempting playback via Web Playback SDK…</p>
