@@ -4,12 +4,13 @@ import os
 import secrets
 import time
 from datetime import datetime, timedelta, date
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 from fastapi import FastAPI, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import math
 import aiosqlite
 
 import spotipy
@@ -100,6 +101,30 @@ async def init_db() -> None:
                 track_id TEXT NOT NULL,
                 picked_at DATE NOT NULL,
                 PRIMARY KEY (session_id, picked_at)
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                track_id TEXT NOT NULL,
+                mood TEXT,
+                score INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS models (
+                mood TEXT PRIMARY KEY,
+                w0 REAL NOT NULL,
+                w1 REAL NOT NULL,
+                w2 REAL NOT NULL,
+                w3 REAL NOT NULL,
+                updated_at INTEGER NOT NULL
             )
             """
         )
@@ -288,14 +313,138 @@ async def api_recommend(body: RecommendBody, session=Depends(require_session)) -
 
     profile = get_user_profile(sp_user)
     candidates = generate_candidates(sp_user, profile)
-    filtered = filter_candidates_by_mood(candidates, mood=body.mood) if body.mood else candidates
-
-    if not filtered:
+    if not candidates:
         return JSONResponse({"message": "No candidate found today"}, status_code=200)
-
-    track_id = filtered[0]
+    # Model-aware ranking
     cat = get_catalog_client()  # client-credentials
-    track = cat.track(track_id)
+    desired_mood = (body.mood or "").lower().strip() or None
+
+    # Import mood config used for features
+    from sotd.mood import mood_genres, POPULARITY_TARGET, RECENCY_BIAS_YEARS  # type: ignore
+
+    desired_genres = mood_genres(desired_mood) if desired_mood else set()
+    pop_target = POPULARITY_TARGET.get(desired_mood, 0.5)
+    recency_years = RECENCY_BIAS_YEARS.get(desired_mood, 10)
+
+    # Load (or initialize) model weights for this mood
+    async def get_model(mood: str) -> List[float]:
+        m = mood or "none"
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT w0, w1, w2, w3 FROM models WHERE mood=?", (m,)) as cur:
+                row = await cur.fetchone()
+            if row:
+                return [row[0], row[1], row[2], row[3]]
+            # Initialize with heuristic weights
+            w = [0.0, 0.6, 0.25, 0.15]
+            now = int(time.time())
+            await db.execute(
+                "INSERT OR REPLACE INTO models (mood, w0, w1, w2, w3, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (m, w[0], w[1], w[2], w[3], now),
+            )
+            await db.commit()
+            return w
+
+    def sigmoid(x: float) -> float:
+        try:
+            if x < -60:
+                return 0.0
+            if x > 60:
+                return 1.0
+            return 1.0 / (1.0 + math.exp(-x))
+        except Exception:
+            return 0.5
+
+    # Batch fetch track objects and artist genres for features
+    def _batched(lst: List[str], size: int) -> List[List[str]]:
+        return [lst[i:i+size] for i in range(0, len(lst), size)]
+
+    track_objects: Dict[str, Dict[str, Any]] = {}
+    for batch in _batched(candidates[:50], 50):
+        try:
+            resp = cat.tracks(batch) or {}
+            for t in resp.get("tracks", []) or []:
+                if t and t.get("id"):
+                    track_objects[t["id"]] = t
+        except Exception:
+            continue
+
+    # Collect artist IDs
+    artist_ids: List[str] = []
+    for t in track_objects.values():
+        for a in (t.get("artists") or []):
+            aid = a.get("id")
+            if aid:
+                artist_ids.append(aid)
+    # Deduplicate
+    seen: Dict[str, bool] = {}
+    unique_artist_ids: List[str] = []
+    for aid in artist_ids:
+        if aid not in seen:
+            seen[aid] = True
+            unique_artist_ids.append(aid)
+
+    artist_genres_map: Dict[str, List[str]] = {}
+    for batch in _batched(unique_artist_ids, 50):
+        try:
+            resp = cat.artists(batch) or {}
+            for a in resp.get("artists", []) or []:
+                if a and a.get("id"):
+                    artist_genres_map[a["id"]] = a.get("genres", []) or []
+        except Exception:
+            continue
+
+    def parse_year(date_str: Optional[str]) -> Optional[int]:
+        if not date_str:
+            return None
+        try:
+            return int((date_str or "").split("-")[0])
+        except Exception:
+            return None
+
+    def feature_tuple(t: Dict[str, Any]) -> List[float]:
+        # genre overlap (union-based Jaccard with mood genres)
+        gset: set[str] = set()
+        for a in (t.get("artists") or []):
+            aid = a.get("id")
+            if aid and artist_genres_map.get(aid):
+                gset.update(artist_genres_map[aid])
+        if desired_genres:
+            inter = len(gset.intersection(desired_genres))
+            union = max(1, len(gset.union(desired_genres)))
+            genre_fit = inter / union
+        else:
+            genre_fit = 0.0
+        popularity = float(t.get("popularity") or 0.0) / 100.0
+        pop_fit = 1.0 - abs(popularity - pop_target)
+        # recency
+        year = parse_year(((t.get("album") or {}).get("release_date")))
+        if year is not None:
+            age_years = max(0, datetime.utcnow().year - year)
+            recency_fit = max(0.0, 1.0 - (age_years / max(1, recency_years)))
+        else:
+            recency_fit = 0.5
+        return [1.0, genre_fit, pop_fit, recency_fit]
+
+    # Compute model scores
+    w = await get_model(desired_mood or "none")
+    scored: List[Tuple[str, float]] = []
+    for tid, tobj in track_objects.items():
+        x = feature_tuple(tobj)
+        z = w[0]*x[0] + w[1]*x[1] + w[2]*x[2] + w[3]*x[3]
+        p = sigmoid(z)
+        scored.append((tid, p))
+
+    if not scored:
+        # Fallback to heuristic ranking when catalog fetch fails
+        filtered = filter_candidates_by_mood(candidates, mood=body.mood) if body.mood else candidates
+        if not filtered:
+            return JSONResponse({"message": "No candidate found today"}, status_code=200)
+        track_id = filtered[0]
+        track = cat.track(track_id)
+    else:
+        scored.sort(key=lambda t: t[1], reverse=True)
+        track_id = scored[0][0]
+        track = track_objects.get(track_id) or cat.track(track_id)
 
     # Build rationale (heuristic example)
     seeds = []
@@ -310,7 +459,7 @@ async def api_recommend(body: RecommendBody, session=Depends(require_session)) -
             "mood": body.mood,
             "valence": None,
             "energy": None,
-            "source": "heuristic",
+            "source": "model+heuristic",
         },
         "novelty": {
             "new_artist": (track.get("artists") or [{}])[0].get("id") not in profile.get("known_artists", set()),
@@ -378,3 +527,109 @@ async def api_player_play(body: PlayBody, session=Depends(require_session)) -> R
         return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+# Feedback API (rubric score: -1, 0, +1)
+class FeedbackBody(BaseModel):
+    track_id: str
+    mood: Optional[str] = None
+    score: int  # -1 disliked for mood, 0 neutral/skip, +1 good fit
+
+
+@app.post("/api/feedback")
+async def api_feedback(body: FeedbackBody, session=Depends(require_session)) -> Response:
+    s = max(-1, min(1, int(body.score)))
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO feedback (session_id, track_id, mood, score, created_at) VALUES (?, ?, ?, ?, ?)",
+            (session["session_id"], body.track_id, (body.mood or "none").lower(), s, now),
+        )
+        await db.commit()
+
+    # Online update of logistic weights via simple gradient step
+    # Use the features from the same logic in /api/recommend
+    try:
+        cat = get_catalog_client()
+        t = cat.track(body.track_id)
+        desired_mood = (body.mood or "none").lower()
+        from sotd.mood import mood_genres, POPULARITY_TARGET, RECENCY_BIAS_YEARS  # type: ignore
+        desired_genres = mood_genres(desired_mood)
+        pop_target = POPULARITY_TARGET.get(desired_mood, 0.5)
+        recency_years = RECENCY_BIAS_YEARS.get(desired_mood, 10)
+
+        # Fetch artist genres
+        artist_ids: List[str] = [a.get("id") for a in (t.get("artists") or []) if a.get("id")]
+        artist_genres_map: Dict[str, List[str]] = {}
+        if artist_ids:
+            resp = cat.artists(artist_ids) or {}
+            for a in resp.get("artists", []) or []:
+                if a and a.get("id"):
+                    artist_genres_map[a["id"]] = a.get("genres", []) or []
+
+        def parse_year(date_str: Optional[str]) -> Optional[int]:
+            if not date_str:
+                return None
+            try:
+                return int((date_str or "").split("-")[0])
+            except Exception:
+                return None
+
+        # Build features
+        gset: set[str] = set()
+        for a in (t.get("artists") or []):
+            aid = a.get("id")
+            if aid and artist_genres_map.get(aid):
+                gset.update(artist_genres_map[aid])
+        if desired_genres:
+            inter = len(gset.intersection(desired_genres))
+            union = max(1, len(gset.union(desired_genres)))
+            genre_fit = inter / union
+        else:
+            genre_fit = 0.0
+        popularity = float(t.get("popularity") or 0.0) / 100.0
+        pop_fit = 1.0 - abs(popularity - pop_target)
+        year = parse_year(((t.get("album") or {}).get("release_date")))
+        if year is not None:
+            age_years = max(0, datetime.utcnow().year - year)
+            recency_fit = max(0.0, 1.0 - (age_years / max(1, recency_years)))
+        else:
+            recency_fit = 0.5
+        x = [1.0, genre_fit, pop_fit, recency_fit]
+
+        # Load current weights
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT w0, w1, w2, w3 FROM models WHERE mood=?", (desired_mood,)) as cur:
+                row = await cur.fetchone()
+            if row:
+                w = [row[0], row[1], row[2], row[3]]
+            else:
+                w = [0.0, 0.6, 0.25, 0.15]
+            # Prediction
+            def sigmoid(z: float) -> float:
+                try:
+                    if z < -60:
+                        return 0.0
+                    if z > 60:
+                        return 1.0
+                    return 1.0 / (1.0 + math.exp(-z))
+                except Exception:
+                    return 0.5
+            z = w[0]*x[0] + w[1]*x[1] + w[2]*x[2] + w[3]*x[3]
+            p = sigmoid(z)
+            # Map rubric score to target y in {0,1}
+            y = 1.0 if s > 0 else 0.0
+            # One-step gradient for logistic loss
+            lr = 0.2
+            grad = [(p - y) * xi for xi in x]
+            w = [w[i] - lr * grad[i] for i in range(4)]
+            now2 = int(time.time())
+            await db.execute(
+                "INSERT OR REPLACE INTO models (mood, w0, w1, w2, w3, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (desired_mood, w[0], w[1], w[2], w[3], now2),
+            )
+            await db.commit()
+    except Exception:
+        pass
+
+    return JSONResponse({"ok": True})
