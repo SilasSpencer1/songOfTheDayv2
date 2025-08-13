@@ -230,8 +230,8 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
   const [sdkReady, setSdkReady] = useState(false)
   const [sdkError, setSdkError] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const [progress, setProgress] = useState(0)
-  const [duration, setDuration] = useState(0)
+  const [progress, setProgress] = useState<number>(0)
+  const [duration, setDuration] = useState<number>(0)
   const [paused, setPaused] = useState(true)
 
   // Load SDK
@@ -302,7 +302,7 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
   if (!rec) return null
 
   // Fallbacks when SDK not available, not premium, or errors
-  if (premium && sdkReady && !sdkError) {
+  if (premium && sdkReady && !sdkError && !rec?.preview_url) {
     return (
       <div style={{ marginTop: 12 }}>
         <p>Attempting playback via Web Playback SDK…</p>
