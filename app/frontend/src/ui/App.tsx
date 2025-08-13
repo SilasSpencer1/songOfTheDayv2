@@ -229,6 +229,11 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
   const [deviceId, setDeviceId] = useState<string | null>(null)
   const [sdkReady, setSdkReady] = useState(false)
   const [sdkError, setSdkError] = useState<string | null>(null)
+  const playerRef = useRef<any>(null)
+  const [sdkState, setSdkState] = useState<any>(null)
+  const [sdkProgress, setSdkProgress] = useState<number>(0)
+  const [sdkDuration, setSdkDuration] = useState<number>(0)
+  const [sdkPaused, setSdkPaused] = useState<boolean>(true)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [progress, setProgress] = useState<number>(0)
   const [duration, setDuration] = useState<number>(0)
@@ -259,6 +264,7 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
           volume: 0.8,
         })
 
+        playerRef.current = player
         player.addListener('ready', ({ device_id }: any) => {
           setDeviceId(device_id)
         })
@@ -268,6 +274,13 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
         player.addListener('initialization_error', ({ message }: any) => setSdkError(message))
         player.addListener('authentication_error', ({ message }: any) => setSdkError(message))
         player.addListener('account_error', ({ message }: any) => setSdkError(message))
+        player.addListener('player_state_changed', (state: any) => {
+          if (!state) return
+          setSdkState(state)
+          setSdkPaused(state.paused)
+          setSdkProgress((state.position || 0) / 1000)
+          setSdkDuration((state.duration || 0) / 1000)
+        })
 
         player.connect()
       } catch (e: any) {
@@ -302,10 +315,23 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
   if (!rec) return null
 
   // Fallbacks when SDK not available, not premium, or errors
-  if (premium && sdkReady && !sdkError && !rec?.preview_url) {
+  if (premium && sdkReady && !sdkError) {
     return (
-      <div style={{ marginTop: 12 }}>
-        <p>Attempting playback via Web Playback SDK…</p>
+      <div className="glass" style={{ marginTop: 12, padding:16 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+          <button className="btn" onClick={async ()=>{
+            if (!rec || !deviceId) return
+            try {
+              await axios.post(`${API_BASE}/api/player/transfer`, { device_id: deviceId }, { withCredentials: true })
+              await axios.put(`${API_BASE}/api/player/play`, { device_id: deviceId, uris: [rec.track_uri] }, { withCredentials: true })
+            } catch {}
+          }}>Start</button>
+          <button className="btn" onClick={()=>playerRef.current?.togglePlay()}>{sdkPaused ? '▶️ Play' : '⏸️ Pause'}</button>
+          <button className="btn" onClick={()=>playerRef.current?.previousTrack()}>⏮️ Prev</button>
+          <button className="btn" onClick={()=>playerRef.current?.nextTrack()}>⏭️ Next</button>
+          <input type="range" min={0} max={sdkDuration||0} step={0.1} value={sdkProgress} onChange={(e)=>{ const t = parseFloat(e.target.value); setSdkProgress(t); try { playerRef.current?.seek(Math.floor(t*1000)) } catch {} }} style={{ flex:1 }} />
+          <div style={{ minWidth:80, textAlign:'right' }}>{Math.floor(sdkProgress)} / {Math.max(1, Math.floor(sdkDuration))}s</div>
+        </div>
       </div>
     )
   }
