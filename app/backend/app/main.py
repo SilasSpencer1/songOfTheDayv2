@@ -26,6 +26,7 @@ SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI")
 SESSION_SECRET = os.getenv("SESSION_SECRET", secrets.token_hex(16))
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:5173")
 ALLOWED_ORIGINS = [APP_BASE_URL]
+ADMIN_USER_IDS = set([u for u in (os.getenv("ADMIN_USER_IDS", "").split(",")) if u])
 
 # Scopes per spec
 LOGIN_SCOPES = " ".join([
@@ -51,6 +52,7 @@ COOKIE_SAMESITE = "none" if COOKIE_SECURE else "lax"
 
 # Database path
 DB_PATH_RAW = os.getenv("DATABASE_PATH", "./app/backend/app/data.db")
+ANALYTICS_DB_PATH_RAW = os.getenv("ANALYTICS_DB_PATH", "./app/backend/app/analytics.db")
 
 
 def _resolve_db_path(raw_path: str) -> str:
@@ -76,6 +78,7 @@ def _resolve_db_path(raw_path: str) -> str:
 
 
 DB_PATH = _resolve_db_path(DB_PATH_RAW)
+ANALYTICS_DB_PATH = _resolve_db_path(ANALYTICS_DB_PATH_RAW)
 
 app = FastAPI(title="Song of the Day API")
 app.add_middleware(
@@ -179,6 +182,37 @@ async def init_db() -> None:
 
         await db.commit()
 
+    # Initialize analytics mirror DB (non-sensitive)
+    async with aiosqlite.connect(ANALYTICS_DB_PATH) as adb:
+        await adb.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analytics_users (
+                user_id TEXT PRIMARY KEY,
+                display_name TEXT,
+                first_seen INTEGER NOT NULL,
+                last_seen INTEGER NOT NULL
+            )
+            """
+        )
+        await adb.execute(
+            """
+            CREATE TABLE IF NOT EXISTS analytics_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                track_id TEXT NOT NULL,
+                picked_at DATE NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        await adb.execute(
+            "CREATE INDEX IF NOT EXISTS ix_ah_user_day ON analytics_history(user_id, picked_at)"
+        )
+        await adb.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_ah_unique ON analytics_history(user_id, track_id, picked_at)"
+        )
+        await adb.commit()
+
 
 @app.on_event("startup")
 async def on_startup() -> None:
@@ -280,6 +314,13 @@ async def require_session(request: Request) -> Dict[str, Any]:
     return session
 
 
+async def require_admin(session=Depends(require_session)) -> Dict[str, Any]:
+    user_id = session.get("user_id")
+    if not user_id or (ADMIN_USER_IDS and user_id not in ADMIN_USER_IDS):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return session
+
+
 # Auth routes
 @app.get("/auth/login")
 async def auth_login(request: Request) -> Response:
@@ -316,6 +357,18 @@ async def auth_callback(request: Request) -> Response:
         user_id=user_id,
         display_name=display_name,
     )
+    # Mirror to analytics (non-sensitive)
+    try:
+        now = int(time.time())
+        async with aiosqlite.connect(ANALYTICS_DB_PATH) as adb:
+            await adb.execute(
+                "INSERT INTO analytics_users(user_id, display_name, first_seen, last_seen) VALUES(?, ?, ?, ?)"
+                " ON CONFLICT(user_id) DO UPDATE SET display_name=excluded.display_name, last_seen=excluded.last_seen",
+                (user_id, display_name, now, now),
+            )
+            await adb.commit()
+    except Exception:
+        pass
     resp = RedirectResponse(APP_BASE_URL)
     resp.set_cookie(
         key=SESSION_COOKIE,
@@ -632,7 +685,99 @@ async def api_recommend(body: RecommendBody, session=Depends(require_session)) -
         )
         await db.commit()
 
+    # Mirror to analytics DB (no tokens)
+    try:
+        now = int(time.time())
+        async with aiosqlite.connect(ANALYTICS_DB_PATH) as adb:
+            await adb.execute(
+                "INSERT OR IGNORE INTO analytics_history(user_id, track_id, picked_at, created_at) VALUES(?, ?, ?, ?)",
+                (user_id, track_id, est_today, now),
+            )
+            await adb.commit()
+    except Exception:
+        pass
+
     return JSONResponse(payload)
+
+
+# Admin stats API (protected by ADMIN_USER_IDS)
+@app.get("/api/admin/stats")
+async def api_admin_stats(session=Depends(require_admin)) -> Response:
+    # Compute date window for last 7 days in ET
+    est = ZoneInfo("America/New_York")
+    today = datetime.now(est).date()
+    start_7 = (today - timedelta(days=6)).isoformat()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Totals
+        async with db.execute("SELECT COUNT(DISTINCT user_id) FROM sessions WHERE user_id IS NOT NULL") as cur:
+            row = await cur.fetchone()
+            total_users = row[0] or 0
+        async with db.execute("SELECT COUNT(*) FROM history WHERE user_id IS NOT NULL") as cur:
+            row = await cur.fetchone()
+            total_sotds = row[0] or 0
+
+        # Last 7 days
+        async with db.execute("SELECT COUNT(DISTINCT user_id) FROM history WHERE user_id IS NOT NULL AND picked_at >= ?", (start_7,)) as cur:
+            row = await cur.fetchone()
+            users_last_7_days = row[0] or 0
+        async with db.execute("SELECT COUNT(*) FROM history WHERE user_id IS NOT NULL AND picked_at >= ?", (start_7,)) as cur:
+            row = await cur.fetchone()
+            sotds_last_7_days = row[0] or 0
+
+        # Top tracks
+        top_tracks: List[Tuple[str, int]] = []
+        async with db.execute("SELECT track_id, COUNT(*) as c FROM history WHERE user_id IS NOT NULL GROUP BY track_id ORDER BY c DESC LIMIT 10") as cur:
+            async for row in cur:
+                top_tracks.append((row[0], row[1]))
+
+        # Users (id -> display name)
+        user_display: Dict[str, str] = {}
+        async with db.execute("SELECT user_id, MAX(display_name) FROM sessions WHERE user_id IS NOT NULL GROUP BY user_id") as cur:
+            async for row in cur:
+                if row[0]:
+                    user_display[row[0]] = row[1] or row[0]
+
+        # Top users by SOTDs
+        top_users: List[Tuple[str, int]] = []
+        async with db.execute("SELECT user_id, COUNT(*) as c FROM history WHERE user_id IS NOT NULL GROUP BY user_id ORDER BY c DESC LIMIT 10") as cur:
+            async for row in cur:
+                uid = row[0]
+                cnt = row[1]
+                if uid:
+                    top_users.append((user_display.get(uid, uid), cnt))
+
+    # Optionally enrich top_tracks with names
+    enriched_tracks: List[Dict[str, Any]] = []
+    try:
+        from sotd.auth import get_catalog_client  # type: ignore
+        cat = get_catalog_client()
+        ids = [tid for tid, _ in top_tracks]
+        if ids:
+            resp = cat.tracks(ids) or {}
+            by_id = {t.get("id"): t for t in (resp.get("tracks") or []) if t}
+            for tid, cnt in top_tracks:
+                t = by_id.get(tid) or {}
+                enriched_tracks.append({
+                    "track_id": tid,
+                    "name": t.get("name"),
+                    "artist": ", ".join(a.get("name") for a in (t.get("artists") or [])),
+                    "count": cnt,
+                })
+    except Exception:
+        for tid, cnt in top_tracks:
+            enriched_tracks.append({"track_id": tid, "name": None, "artist": None, "count": cnt})
+
+    return JSONResponse({
+        "total_users": total_users,
+        "total_sotds": total_sotds,
+        "users_last_7_days": users_last_7_days,
+        "sotds_last_7_days": sotds_last_7_days,
+        "top_tracks": enriched_tracks,
+        "top_users": [{"display_name": name, "count": cnt} for name, cnt in top_users],
+        "window_start": start_7,
+        "today": today.isoformat(),
+    })
 
 
 # Playback helper APIs
