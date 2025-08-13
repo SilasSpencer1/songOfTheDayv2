@@ -4,6 +4,7 @@ import os
 import secrets
 import time
 from datetime import datetime, timedelta, date
+from zoneinfo import ZoneInfo
 from typing import Optional, Dict, Any, Tuple, List
 
 from fastapi import FastAPI, Depends, HTTPException, Request, Response
@@ -305,6 +306,40 @@ class RecommendBody(BaseModel):
 
 @app.post("/api/recommend")
 async def api_recommend(body: RecommendBody, session=Depends(require_session)) -> Response:
+    # Determine "today" in Eastern Time to enforce one-pick-per-day
+    est_today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+
+    # If a pick already exists for today, return it (Wordle-style daily lock)
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT track_id FROM history WHERE session_id = ? AND picked_at = ?",
+            (session["session_id"], est_today),
+        ) as cur:
+            row = await cur.fetchone()
+    if row and row[0]:
+        track_id = row[0]
+        from sotd.auth import get_catalog_client  # type: ignore
+        cat = get_catalog_client()
+        try:
+            track = cat.track(track_id)
+        except Exception as e:
+            return JSONResponse({"message": "Could not fetch today's pick", "error": str(e)}, status_code=400)
+
+        images = ((track.get("album") or {}).get("images") or [])
+        album_image_url = images[0].get("url") if images else None
+        payload = {
+            "track_id": track_id,
+            "track_uri": track.get("uri"),
+            "name": track.get("name"),
+            "artist": ", ".join(a.get("name") for a in (track.get("artists") or [])),
+            "album": (track.get("album") or {}).get("name"),
+            "album_image_url": album_image_url,
+            "spotify_url": f"https://open.spotify.com/track/{track_id}",
+            "preview_url": track.get("preview_url"),
+            "why": {"note": "Today's pick is already set. New pick after 12:00am ET."},
+            "already_picked": True,
+        }
+        return JSONResponse(payload)
     # Build user-auth client for profile endpoints
     sp_user = spotipy.Spotify(auth=session["access_token"])  # user token
 
@@ -485,11 +520,11 @@ async def api_recommend(body: RecommendBody, session=Depends(require_session)) -
         "why": why,
     }
 
-    # Persist daily history
+    # Persist daily history (Eastern Time day key)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT OR REPLACE INTO history (session_id, track_id, picked_at) VALUES (?, ?, ?)",
-            (session["session_id"], track_id, date.today().isoformat()),
+            (session["session_id"], track_id, est_today),
         )
         await db.commit()
 

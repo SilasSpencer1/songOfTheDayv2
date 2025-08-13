@@ -335,7 +335,6 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
       <div className="fade-up" style={{ marginTop: 16 }}>
         <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
           <button className="btn" onClick={()=>playerRef.current?.togglePlay()}>{sdkPaused ? 'Play' : 'Pause'}</button>
-          <div style={{ minWidth:80, textAlign:'right' }}>{Math.floor(sdkProgress)} / {Math.max(1, Math.floor(sdkDuration))}s</div>
         </div>
       </div>
     )
@@ -351,9 +350,7 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
           setPaused(a.paused)
         }} style={{ display:'none' }} />
         <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-          <button className="btn" onClick={()=>{ if (!audioRef.current) return; audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime-5) }}>⏪ 5s</button>
           <button className="btn" onClick={()=>{ if (!audioRef.current) return; if (audioRef.current.paused) { audioRef.current.play() } else { audioRef.current.pause() } }}>{paused ? 'Play' : 'Pause'}</button>
-          <div style={{ minWidth:60, textAlign:'right' }}>{Math.floor(progress)} / {Math.floor(duration||30)}s</div>
         </div>
       </div>
     )
