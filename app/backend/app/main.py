@@ -114,7 +114,9 @@ async def init_db() -> None:
                 access_token TEXT NOT NULL,
                 refresh_token TEXT NOT NULL,
                 expires_at INTEGER NOT NULL,
-                created_at INTEGER NOT NULL
+                created_at INTEGER NOT NULL,
+                user_id TEXT,
+                display_name TEXT
             )
             """
         )
@@ -124,7 +126,7 @@ async def init_db() -> None:
                 session_id TEXT NOT NULL,
                 track_id TEXT NOT NULL,
                 picked_at DATE NOT NULL,
-                PRIMARY KEY (session_id, picked_at)
+                user_id TEXT
             )
             """
         )
@@ -152,6 +154,29 @@ async def init_db() -> None:
             )
             """
         )
+        # Lightweight migrations: ensure columns and indexes exist
+        # Add missing columns for sessions
+        async with db.execute("PRAGMA table_info(sessions)") as cur:
+            cols = [row[1] async for row in cur]
+        if "user_id" not in cols:
+            await db.execute("ALTER TABLE sessions ADD COLUMN user_id TEXT")
+        if "display_name" not in cols:
+            await db.execute("ALTER TABLE sessions ADD COLUMN display_name TEXT")
+
+        # Add missing column for history
+        async with db.execute("PRAGMA table_info(history)") as cur:
+            hcols = [row[1] async for row in cur]
+        if "user_id" not in hcols:
+            await db.execute("ALTER TABLE history ADD COLUMN user_id TEXT")
+
+        # Create unique indexes to enforce per-user constraints
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_history_user_day ON history(user_id, picked_at)"
+        )
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_history_user_track ON history(user_id, track_id)"
+        )
+
         await db.commit()
 
 
@@ -175,7 +200,7 @@ def make_auth(show_dialog: bool = False) -> SpotifyOAuth:
     )
 
 
-async def save_session(session_id: str, access: str, refresh: str, expires_in: int) -> None:
+async def save_session(session_id: str, access: str, refresh: str, expires_in: int, *, user_id: Optional[str] = None, display_name: Optional[str] = None) -> None:
     expires_at = int(time.time()) + int(expires_in) - 30
     now = int(time.time())
     async with aiosqlite.connect(DB_PATH) as db:
@@ -185,10 +210,16 @@ async def save_session(session_id: str, access: str, refresh: str, expires_in: i
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET access_token=excluded.access_token,
                                                  refresh_token=excluded.refresh_token,
-                                                 expires_at=excluded.expires_at
+                                                  expires_at=excluded.expires_at
             """,
             (session_id, access, refresh, expires_at, now),
         )
+        # Update user metadata if provided (only set once unless new info provided)
+        if user_id is not None or display_name is not None:
+            await db.execute(
+                "UPDATE sessions SET user_id=COALESCE(?, user_id), display_name=COALESCE(?, display_name) WHERE session_id=?",
+                (user_id, display_name, session_id),
+            )
         await db.commit()
 
 
@@ -201,7 +232,7 @@ async def delete_session(session_id: str) -> None:
 async def get_session(session_id: str) -> Optional[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT session_id, access_token, refresh_token, expires_at FROM sessions WHERE session_id = ?",
+            "SELECT session_id, access_token, refresh_token, expires_at, user_id, display_name FROM sessions WHERE session_id = ?",
             (session_id,),
         ) as cur:
             row = await cur.fetchone()
@@ -212,6 +243,8 @@ async def get_session(session_id: str) -> Optional[Dict[str, Any]]:
                 "access_token": row[1],
                 "refresh_token": row[2],
                 "expires_at": row[3],
+                "user_id": row[4],
+                "display_name": row[5],
             }
 
 
@@ -268,12 +301,20 @@ async def auth_callback(request: Request) -> Response:
 
     auth = make_auth()
     token_info = auth.get_access_token(code, as_dict=True)  # type: ignore
+    # Fetch Spotify user identity to bind sessions and history per user
+    sp_user = spotipy.Spotify(auth=token_info["access_token"])  # type: ignore
+    me = sp_user.me()
+    user_id = me.get("id")
+    display_name = me.get("display_name") or user_id
+
     session_id = secrets.token_urlsafe(24)
     await save_session(
         session_id,
         token_info["access_token"],
         token_info["refresh_token"],
         token_info["expires_in"],
+        user_id=user_id,
+        display_name=display_name,
     )
     resp = RedirectResponse(APP_BASE_URL)
     resp.set_cookie(
@@ -312,8 +353,9 @@ async def auth_logout(request: Request) -> Response:
 async def api_me(session=Depends(require_session)) -> Response:
     sp = spotipy.Spotify(auth=session["access_token"])  # user-auth client
     try:
+        # Use cached display_name if available; still call /me for product
         me = sp.me()
-        display_name = me.get("display_name") or me.get("id")
+        display_name = session.get("display_name") or me.get("display_name") or me.get("id")
         product = (me.get("product") or "free").lower()
         premium = product == "premium"
         return JSONResponse({"display_name": display_name, "premium": premium})
@@ -331,11 +373,41 @@ async def api_recommend(body: RecommendBody, session=Depends(require_session)) -
     # Determine "today" in Eastern Time to enforce one-pick-per-day
     est_today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
 
-    # If a pick already exists for today, return it (Wordle-style daily lock)
+    # Identify user (bound at auth time). If missing, fetch now as a fallback.
+    user_id = session.get("user_id")
+    if not user_id:
+        try:
+            sp_tmp = spotipy.Spotify(auth=session["access_token"])  # type: ignore
+            me_tmp = sp_tmp.me()
+            user_id = me_tmp.get("id")
+            display_name = me_tmp.get("display_name") or user_id
+            # Persist into session for future requests
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute(
+                    "UPDATE sessions SET user_id = ?, display_name = ? WHERE session_id = ?",
+                    (user_id, display_name, session["session_id"]),
+                )
+                await db.commit()
+        except Exception:
+            user_id = None
+
+    # If we cannot determine user, do not proceed
+    if not user_id:
+        return JSONResponse({"error": "Unable to identify Spotify user"}, status_code=401)
+
+    # Backfill any legacy history rows tied to this session without user_id
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE history SET user_id = ? WHERE session_id = ? AND (user_id IS NULL OR user_id = '')",
+            (user_id, session["session_id"]),
+        )
+        await db.commit()
+
+    # If a pick already exists for today for this user, return it
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT track_id FROM history WHERE session_id = ? AND picked_at = ?",
-            (session["session_id"], est_today),
+            "SELECT track_id FROM history WHERE user_id = ? AND picked_at = ?",
+            (user_id, est_today),
         ) as cur:
             row = await cur.fetchone()
     if row and row[0]:
@@ -373,6 +445,15 @@ async def api_recommend(body: RecommendBody, session=Depends(require_session)) -
 
     profile = get_user_profile(sp_user)
     candidates = generate_candidates(sp_user, profile)
+    # Exclude any tracks previously recommended to this user
+    prior_recs: List[str] = []
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT track_id FROM history WHERE user_id = ?", (user_id,)) as cur:
+            async for r in cur:
+                prior_recs.append(r[0])
+    if prior_recs:
+        prior_set = set(prior_recs)
+        candidates = [tid for tid in candidates if tid not in prior_set]
     if not candidates:
         return JSONResponse({"message": "No candidate found today"}, status_code=200)
     # Model-aware ranking
@@ -542,11 +623,12 @@ async def api_recommend(body: RecommendBody, session=Depends(require_session)) -
         "why": why,
     }
 
-    # Persist daily history (Eastern Time day key)
+    # Persist daily history (per-user, Eastern Time day key), and uniqueness across all time
     async with aiosqlite.connect(DB_PATH) as db:
+        # First, insert the recommendation record; unique index prevents duplicates
         await db.execute(
-            "INSERT OR REPLACE INTO history (session_id, track_id, picked_at) VALUES (?, ?, ?)",
-            (session["session_id"], track_id, est_today),
+            "INSERT OR IGNORE INTO history (session_id, track_id, picked_at, user_id) VALUES (?, ?, ?, ?)",
+            (session["session_id"], track_id, est_today, user_id),
         )
         await db.commit()
 
