@@ -204,6 +204,11 @@ function RecommendCard({
         {loading ? 'Loading…' : 'Get Song of the Day'}
       </button>
       {error && <p style={{ color: 'red' }}>{error}</p>}
+      {rec && (rec as any).already_picked && (
+        <div className="glass" style={{ padding:12, marginTop:8 }}>
+          You already got today's song. A new pick will be available after 12:00am ET.
+        </div>
+      )}
       {rec && (
         <div style={{ marginTop: 16 }}>
           <div className="hero-row">
