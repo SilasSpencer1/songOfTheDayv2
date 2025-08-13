@@ -112,9 +112,20 @@ export function App() {
           </div>
         </div>
         {showAbout && (
-          <div className="glass" style={{ padding:16, marginTop:12, position: 'relative', zIndex: 1 }}>
+          <div className="glass fade-up" style={{ padding:16, marginTop:12, position: 'relative', zIndex: 1 }}>
             <h3 style={{ marginTop:0 }}>About</h3>
-            <p>Daily, novel song picks based on your listening, mood, and your feedback. Privacy-friendly: tokens and logic run on the backend.</p>
+            <p>Our goal is to find that one track you’ll keep on repeat the rest of the day. We learn from your listening and your quick feedback to improve each pick.</p>
+            <p style={{ opacity:.9 }}>
+              Under the hood, we train a tiny online model per mood using logistic regression. Each candidate track is featurized by:
+            </p>
+            <ul>
+              <li>Genre fit with your chosen mood (overlap of artist genres with a mood genre set)</li>
+              <li>Popularity proximity to a mood target (we don’t just chase the most popular)</li>
+              <li>Recency bias tuned per mood (some moods prefer fresher releases)</li>
+            </ul>
+            <p style={{ opacity:.9 }}>
+              Your thumbs-up/down updates the weights immediately, so the next recommendation adapts to you. We never call restricted Spotify endpoints; everything is heuristics plus your signal.
+            </p>
           </div>
         )}
         {showSettings && (
@@ -127,7 +138,7 @@ export function App() {
         <LoginGate onLogin={onLogin} />
       ) : (
         <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:16, marginTop:16, position: 'relative', zIndex: 1 }}>
-          <div className="glass" style={{ padding:16 }}>
+          <div className="glass fade-up" style={{ padding:16 }}>
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
               <div>Welcome, {me.display_name}</div>
               <MoodSelector mood={mood} onChange={setMood} />
@@ -206,7 +217,7 @@ function RecommendCard({
               <div className="title-xl">{rec.name}</div>
               <a href={rec.spotify_url} target="_blank" rel="noreferrer">Open in Spotify</a>
               <div style={{ marginTop:8, display:'flex', gap:8, flexWrap:'wrap' }}>
-                <LikeButtons rec={rec} />
+                <LikeButtonOnly rec={rec} />
               </div>
             </div>
           </div>
@@ -323,8 +334,7 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
     return (
       <div className="fade-up" style={{ marginTop: 16 }}>
         <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
-          <button className="btn" onClick={()=>playerRef.current?.togglePlay()}>{sdkPaused ? '▶️ Play' : '⏸️ Pause'}</button>
-          <input type="range" min={0} max={sdkDuration||0} step={0.1} value={sdkProgress} onChange={(e)=>{ const t = parseFloat(e.target.value); setSdkProgress(t); try { playerRef.current?.seek(Math.floor(t*1000)) } catch {} }} style={{ flex:1 }} />
+          <button className="btn" onClick={()=>playerRef.current?.togglePlay()}>{sdkPaused ? 'Play' : 'Pause'}</button>
           <div style={{ minWidth:80, textAlign:'right' }}>{Math.floor(sdkProgress)} / {Math.max(1, Math.floor(sdkDuration))}s</div>
         </div>
       </div>
@@ -342,9 +352,7 @@ function Player({ rec, premium }: { rec: RecommendPayload | null; premium: boole
         }} style={{ display:'none' }} />
         <div style={{ display:'flex', alignItems:'center', gap:12 }}>
           <button className="btn" onClick={()=>{ if (!audioRef.current) return; audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime-5) }}>⏪ 5s</button>
-          <button className="btn" onClick={()=>{ if (!audioRef.current) return; if (audioRef.current.paused) { audioRef.current.play() } else { audioRef.current.pause() } }}>{paused ? '▶️' : '⏸️'}</button>
-          <button className="btn" onClick={()=>{ if (!audioRef.current) return; audioRef.current.currentTime = Math.min(duration, audioRef.current.currentTime+5) }}>⏩ 5s</button>
-          <input type="range" min={0} max={duration||30} step={0.1} value={progress} onChange={(e)=>{ const t = parseFloat(e.target.value); if (audioRef.current) { audioRef.current.currentTime = t } setProgress(t) }} style={{ flex:1 }} />
+          <button className="btn" onClick={()=>{ if (!audioRef.current) return; if (audioRef.current.paused) { audioRef.current.play() } else { audioRef.current.pause() } }}>{paused ? 'Play' : 'Pause'}</button>
           <div style={{ minWidth:60, textAlign:'right' }}>{Math.floor(progress)} / {Math.floor(duration||30)}s</div>
         </div>
       </div>
@@ -387,7 +395,7 @@ function Feedback({ rec }: { rec: RecommendPayload }) {
   )
 }
 
-function LikeButtons({ rec }: { rec: RecommendPayload }) {
+function LikeButtonOnly({ rec }: { rec: RecommendPayload }) {
   const [msg, setMsg] = useState<string | null>(null)
   const like = async () => {
     try {
@@ -395,18 +403,9 @@ function LikeButtons({ rec }: { rec: RecommendPayload }) {
       setMsg('Saved to Liked Songs')
     } catch (e:any) { setMsg('Needs scope or failed') }
   }
-  const addToPlaylist = async () => {
-    const pid = prompt('Enter playlist ID (from Spotify URL):')
-    if (!pid) return
-    try {
-      await axios.post(`${API_BASE}/api/playlist/add`, { playlist_id: pid, track_uri: rec.track_uri }, { withCredentials: true })
-      setMsg('Added to playlist')
-    } catch (e:any) { setMsg('Add failed') }
-  }
   return (
     <>
-      <button className="btn" onClick={like}>❤️ Like</button>
-      <button className="btn" onClick={addToPlaylist}>➕ Add to playlist</button>
+      <button className="btn" onClick={like}>Add to Liked Songs</button>
       {msg && <span style={{ opacity:.8 }}>{msg}</span>}
     </>
   )
