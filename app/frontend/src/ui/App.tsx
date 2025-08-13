@@ -90,8 +90,10 @@ export function App() {
     window.location.reload()
   }
 
-  const onClearCache = () => {
-    localStorage.clear(); sessionStorage.clear(); setRec(null)
+  const onClearCache = async () => {
+    try { await axios.post(`${API_BASE}/auth/logout`, {}, { withCredentials: true }) } catch {}
+    try { localStorage.clear(); sessionStorage.clear() } catch {}
+    window.location.reload()
   }
 
   return (
