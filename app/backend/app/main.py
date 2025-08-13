@@ -31,11 +31,14 @@ LOGIN_SCOPES = " ".join([
     "user-read-recently-played",
     "user-top-read",
     "user-library-read",
+    "user-library-modify",
     "user-read-email",
     "user-read-private",
     "user-modify-playback-state",
     "user-read-playback-state",
     "streaming",
+    "playlist-modify-public",
+    "playlist-modify-private",
 ])
 
 # Cookie names
@@ -524,6 +527,37 @@ async def api_player_play(body: PlayBody, session=Depends(require_session)) -> R
     sp = spotipy.Spotify(auth=session["access_token"])  # user-auth client
     try:
         sp.start_playback(device_id=body.device_id, uris=body.uris)
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+# Library helpers
+class SaveLikeBody(BaseModel):
+    track_id: str
+
+
+@app.post("/api/like")
+async def api_like(body: SaveLikeBody, session=Depends(require_session)) -> Response:
+    try:
+        sp = spotipy.Spotify(auth=session["access_token"])  # user-auth client
+        sp.current_user_saved_tracks_add([body.track_id])
+        return JSONResponse({"ok": True})
+    except Exception as e:
+        # surface 403 when scope missing
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+class AddToPlaylistBody(BaseModel):
+    playlist_id: str
+    track_uri: str
+
+
+@app.post("/api/playlist/add")
+async def api_playlist_add(body: AddToPlaylistBody, session=Depends(require_session)) -> Response:
+    try:
+        sp = spotipy.Spotify(auth=session["access_token"])  # user-auth client
+        sp.playlist_add_items(body.playlist_id, [body.track_uri])
         return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
