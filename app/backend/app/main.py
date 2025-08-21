@@ -43,8 +43,11 @@ LOGIN_SCOPES = " ".join([
     "playlist-modify-private",
 ])
 
-# Cookie names
-SESSION_COOKIE = f"{APP_NAME}_sid"
+# Cookie names (use host-only names; support legacy during transition)
+SESSION_COOKIE_NEW = f"__Host-{APP_NAME}_sid"
+SESSION_COOKIE_LEGACY = f"{APP_NAME}_sid"
+OAUTH_STATE_COOKIE_NEW = f"__Host-{APP_NAME}_oauth_state"
+OAUTH_STATE_COOKIE_LEGACY = f"{APP_NAME}_oauth_state"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 COOKIE_SECURE = APP_BASE_URL.startswith("https://")
 # Use SameSite=None for cross-site (production, https), Lax for local dev
@@ -304,7 +307,8 @@ async def refresh_if_needed(session: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def require_session(request: Request) -> Dict[str, Any]:
-    sid = request.cookies.get(SESSION_COOKIE)
+    # Prefer new host-only cookie; fall back to legacy if present
+    sid = request.cookies.get(SESSION_COOKIE_NEW) or request.cookies.get(SESSION_COOKIE_LEGACY)
     if not sid:
         raise HTTPException(status_code=401, detail="Not logged in")
     session = await get_session(sid)
@@ -334,14 +338,13 @@ async def auth_login(request: Request) -> Response:
     # Bind state to host-only cookie for verification in callback
     host = request.url.hostname or ""
     resp.set_cookie(
-        key=f"{APP_NAME}_oauth_state",
+        key=OAUTH_STATE_COOKIE_NEW,
         value=state,
         httponly=True,
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
         max_age=300,
         path="/",
-        domain=host,
     )
     return resp
 
@@ -356,7 +359,7 @@ async def auth_callback(request: Request) -> Response:
         return JSONResponse({"error": "Missing code"}, status_code=400)
     # Verify OAuth state
     state_q = request.query_params.get("state")
-    state_c = request.cookies.get(f"{APP_NAME}_oauth_state")
+    state_c = request.cookies.get(OAUTH_STATE_COOKIE_NEW) or request.cookies.get(OAUTH_STATE_COOKIE_LEGACY)
     if not state_q or not state_c or state_q != state_c:
         return JSONResponse({"error": "Invalid state"}, status_code=400)
 
@@ -390,58 +393,90 @@ async def auth_callback(request: Request) -> Response:
     except Exception:
         pass
     resp = RedirectResponse(APP_BASE_URL)
-    host = request.url.hostname or ""
     # Clear state cookie
     resp.set_cookie(
-        key=f"{APP_NAME}_oauth_state",
+        key=OAUTH_STATE_COOKIE_NEW,
         value="",
         httponly=True,
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
         max_age=0,
         path="/",
-        domain=host,
     )
     resp.set_cookie(
-        key=SESSION_COOKIE,
+        key=SESSION_COOKIE_NEW,
         value=session_id,
         httponly=True,
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
         max_age=COOKIE_MAX_AGE,
         path="/",
-        domain=host,
+    )
+    # Also set legacy name for compatibility and clear legacy state cookie
+    resp.set_cookie(
+        key=SESSION_COOKIE_LEGACY,
+        value=session_id,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=COOKIE_MAX_AGE,
+        path="/",
+    )
+    resp.set_cookie(
+        key=OAUTH_STATE_COOKIE_LEGACY,
+        value="",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=0,
+        path="/",
     )
     return resp
 
 
 @app.post("/auth/logout")
 async def auth_logout(request: Request) -> Response:
-    sid = request.cookies.get(SESSION_COOKIE)
+    sid = request.cookies.get(SESSION_COOKIE_NEW) or request.cookies.get(SESSION_COOKIE_LEGACY)
     if sid:
         await delete_session(sid)
     resp = JSONResponse({"ok": True})
     # Expire the cookie(s)
-    host = request.url.hostname or ""
     resp.set_cookie(
-        key=SESSION_COOKIE,
+        key=SESSION_COOKIE_NEW,
         value="",
         httponly=True,
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
         max_age=0,
         path="/",
-        domain=host,
     )
     resp.set_cookie(
-        key=f"{APP_NAME}_oauth_state",
+        key=OAUTH_STATE_COOKIE_NEW,
         value="",
         httponly=True,
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
         max_age=0,
         path="/",
-        domain=host,
+    )
+    # Expire legacy names
+    resp.set_cookie(
+        key=SESSION_COOKIE_LEGACY,
+        value="",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=0,
+        path="/",
+    )
+    resp.set_cookie(
+        key=OAUTH_STATE_COOKIE_LEGACY,
+        value="",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=0,
+        path="/",
     )
     return resp
 
