@@ -327,8 +327,23 @@ async def auth_login(request: Request) -> Response:
     # If force=1, show Spotify login/consent dialog even if already signed-in
     force = request.query_params.get("force") in {"1", "true", "True"}
     auth = make_auth(show_dialog=bool(force))
-    url = auth.get_authorize_url()  # type: ignore
-    return RedirectResponse(url)
+    # CSRF state
+    state = secrets.token_urlsafe(16)
+    url = auth.get_authorize_url(state=state)  # type: ignore
+    resp = RedirectResponse(url)
+    # Bind state to host-only cookie for verification in callback
+    host = request.url.hostname or ""
+    resp.set_cookie(
+        key=f"{APP_NAME}_oauth_state",
+        value=state,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=300,
+        path="/",
+        domain=host,
+    )
+    return resp
 
 
 @app.get("/auth/callback")
@@ -339,6 +354,11 @@ async def auth_callback(request: Request) -> Response:
         return JSONResponse({"error": error}, status_code=400)
     if not code:
         return JSONResponse({"error": "Missing code"}, status_code=400)
+    # Verify OAuth state
+    state_q = request.query_params.get("state")
+    state_c = request.cookies.get(f"{APP_NAME}_oauth_state")
+    if not state_q or not state_c or state_q != state_c:
+        return JSONResponse({"error": "Invalid state"}, status_code=400)
 
     auth = make_auth()
     token_info = auth.get_access_token(code, as_dict=True)  # type: ignore
@@ -370,6 +390,18 @@ async def auth_callback(request: Request) -> Response:
     except Exception:
         pass
     resp = RedirectResponse(APP_BASE_URL)
+    host = request.url.hostname or ""
+    # Clear state cookie
+    resp.set_cookie(
+        key=f"{APP_NAME}_oauth_state",
+        value="",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=0,
+        path="/",
+        domain=host,
+    )
     resp.set_cookie(
         key=SESSION_COOKIE,
         value=session_id,
@@ -378,6 +410,7 @@ async def auth_callback(request: Request) -> Response:
         samesite=COOKIE_SAMESITE,
         max_age=COOKIE_MAX_AGE,
         path="/",
+        domain=host,
     )
     return resp
 
@@ -388,7 +421,8 @@ async def auth_logout(request: Request) -> Response:
     if sid:
         await delete_session(sid)
     resp = JSONResponse({"ok": True})
-    # Expire the cookie
+    # Expire the cookie(s)
+    host = request.url.hostname or ""
     resp.set_cookie(
         key=SESSION_COOKIE,
         value="",
@@ -397,6 +431,17 @@ async def auth_logout(request: Request) -> Response:
         samesite=COOKIE_SAMESITE,
         max_age=0,
         path="/",
+        domain=host,
+    )
+    resp.set_cookie(
+        key=f"{APP_NAME}_oauth_state",
+        value="",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=0,
+        path="/",
+        domain=host,
     )
     return resp
 
@@ -411,7 +456,7 @@ async def api_me(session=Depends(require_session)) -> Response:
         display_name = session.get("display_name") or me.get("display_name") or me.get("id")
         product = (me.get("product") or "free").lower()
         premium = product == "premium"
-        return JSONResponse({"display_name": display_name, "premium": premium})
+        return JSONResponse({"display_name": display_name, "user_id": me.get("id"), "premium": premium})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=400)
 
