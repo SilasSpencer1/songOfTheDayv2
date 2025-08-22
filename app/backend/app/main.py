@@ -456,9 +456,9 @@ async def auth_logout(request: Request) -> Response:
 async def api_me(session=Depends(require_session)) -> Response:
     sp = spotipy.Spotify(auth=session["access_token"])  # user-auth client
     try:
-        # Use cached display_name if available; still call /me for product
+        # Always use live /me so identity can never be stale
         me = sp.me()
-        display_name = session.get("display_name") or me.get("display_name") or me.get("id")
+        display_name = me.get("display_name") or me.get("id")
         product = (me.get("product") or "free").lower()
         premium = product == "premium"
         return JSONResponse({"display_name": display_name, "user_id": me.get("id"), "premium": premium})
