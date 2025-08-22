@@ -1,0 +1,95 @@
+name: Redeploy Song of the Day (Railway)
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_service_id:
+        description: Optional override for Backend Service ID
+        required: false
+      frontend_service_id:
+        description: Optional override for Frontend Service ID
+        required: false
+
+env:
+  RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+  RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
+  RAILWAY_ENV_ID: ${{ secrets.RAILWAY_ENV_ID }}
+  BACKEND_SERVICE_ID: ${{ inputs.backend_service_id || secrets.RAILWAY_BACKEND_SERVICE_ID }}
+  FRONTEND_SERVICE_ID: ${{ inputs.frontend_service_id || secrets.RAILWAY_FRONTEND_SERVICE_ID }}
+
+jobs:
+  redeploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        shell: bash
+        run: |
+          curl -fsSL https://railway.app/install.sh | sh
+          echo "$HOME/.railway/bin" >> "$GITHUB_PATH"
+
+      - name: Auth with Railway
+        shell: bash
+        env:
+          RAILWAY_TOKEN: ${{ env.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          railway login --token "$RAILWAY_TOKEN"
+          railway whoami || true
+
+      - name: Deploy backend (detached)
+        id: deploy_backend
+        shell: bash
+        env:
+          RAILWAY_PROJECT_ID: ${{ env.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENV_ID: ${{ env.RAILWAY_ENV_ID }}
+          BACKEND_SERVICE_ID: ${{ env.BACKEND_SERVICE_ID }}
+        run: |
+          set -euo pipefail
+          echo "Deploying backend service: $BACKEND_SERVICE_ID"
+          railway up --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENV_ID" --service "$BACKEND_SERVICE_ID" --detach \
+            || railway deploy --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENV_ID" --service "$BACKEND_SERVICE_ID" --detach
+
+      - name: Wait for backend health (optional)
+        if: ${{ secrets.BACKEND_HEALTH_URL != '' }}
+        shell: bash
+        env:
+          HEALTH_URL: ${{ secrets.BACKEND_HEALTH_URL }}
+        run: |
+          set -euo pipefail
+          echo "Waiting for backend health at $HEALTH_URL"
+          for i in {1..60}; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo 000)
+            echo "Attempt $i: HTTP $code"
+            if [ "$code" = "200" ]; then
+              echo "Backend is healthy."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Backend did not become healthy in time." >&2
+          exit 1
+
+      - name: Deploy frontend (detached)
+        id: deploy_frontend
+        shell: bash
+        env:
+          RAILWAY_PROJECT_ID: ${{ env.RAILWAY_PROJECT_ID }}
+          RAILWAY_ENV_ID: ${{ env.RAILWAY_ENV_ID }}
+          FRONTEND_SERVICE_ID: ${{ env.FRONTEND_SERVICE_ID }}
+        run: |
+          set -euo pipefail
+          echo "Deploying frontend service: $FRONTEND_SERVICE_ID"
+          railway up --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENV_ID" --service "$FRONTEND_SERVICE_ID" --detach \
+            || railway deploy --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENV_ID" --service "$FRONTEND_SERVICE_ID" --detach
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "Backend Service ID: $BACKEND_SERVICE_ID"
+          echo "Frontend Service ID: $FRONTEND_SERVICE_ID"
+

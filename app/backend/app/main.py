@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any, Tuple, List
 
 from fastapi import FastAPI, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
+import httpx
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import math
@@ -107,6 +108,12 @@ async def no_cache_for_auth_and_api(request: Request, call_next):
         else:
             response.headers["Vary"] = "Cookie"
     return response
+
+
+# Simple health endpoint for readiness checks
+@app.get("/health")
+async def health() -> Response:
+    return JSONResponse({"ok": True})
 
 
 async def init_db() -> None:
@@ -527,6 +534,44 @@ async def auth_switch(request: Request) -> Response:
     except Exception:
         pass
     return resp
+
+
+class RedeployBody(BaseModel):
+    backend_hook: str
+    frontend_hook: str
+    backend_health: str
+    timeout_seconds: int = 180
+
+
+@app.post("/auth/redeploy")
+async def auth_redeploy(body: RedeployBody) -> Response:
+    # Fire backend redeploy, wait for /health to come up, then trigger frontend redeploy
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            await client.post(body.backend_hook)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"backend_hook_failed: {e}"}, status_code=400)
+        # Poll health until ready or timeout
+        import asyncio
+        deadline = time.time() + max(30, min(600, body.timeout_seconds))
+        last_err = None
+        while time.time() < deadline:
+            try:
+                r = await client.get(body.backend_health)
+                if r.status_code == 200:
+                    break
+                last_err = f"status {r.status_code}"
+            except Exception as e:
+                last_err = str(e)
+            await asyncio.sleep(3)
+        else:
+            return JSONResponse({"ok": False, "error": f"backend_not_ready: {last_err}"}, status_code=504)
+        # Trigger frontend redeploy
+        try:
+            await client.post(body.frontend_hook)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"frontend_hook_failed: {e}"}, status_code=400)
+    return JSONResponse({"ok": True})
 
 # /api/me to show minimal profile info and premium flag
 @app.get("/api/me")
