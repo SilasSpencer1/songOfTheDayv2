@@ -3,7 +3,6 @@
 A deployable web app that connects to Spotify, lets users select a mood, requests a daily recommendation, and plays it in-page with graceful fallbacks.
 
 ## Constraints respected
-- No calls to `/v1/recommendations` or `/v1/audio-features`.
 - Recommender uses allowed endpoints only (recently-played, top-artists, top-tracks, me/tracks when granted, related-artists, artist top-tracks, search, tracks/{id}).
 - OAuth and tokens handled server-side; no secrets in the browser.
 - Playback uses Spotify Web Playback SDK when user has Premium; otherwise fallback to preview or embed.
