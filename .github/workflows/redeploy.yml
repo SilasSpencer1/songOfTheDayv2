@@ -14,8 +14,8 @@ env:
   RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
   RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
   RAILWAY_ENV_ID: ${{ secrets.RAILWAY_ENV_ID }}
-  BACKEND_SERVICE_ID: ${{ inputs.backend_service_id || secrets.RAILWAY_BACKEND_SERVICE_ID }}
-  FRONTEND_SERVICE_ID: ${{ inputs.frontend_service_id || secrets.RAILWAY_FRONTEND_SERVICE_ID }}
+  BACKEND_SERVICE_ID: ${{ github.event.inputs.backend_service_id != '' && github.event.inputs.backend_service_id || secrets.RAILWAY_BACKEND_SERVICE_ID }}
+  FRONTEND_SERVICE_ID: ${{ github.event.inputs.frontend_service_id != '' && github.event.inputs.frontend_service_id || secrets.RAILWAY_FRONTEND_SERVICE_ID }}
 
 jobs:
   redeploy:
@@ -55,12 +55,15 @@ jobs:
             || railway deploy --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENV_ID" --service "$BACKEND_SERVICE_ID" --detach
 
       - name: Wait for backend health (optional)
-        if: ${{ secrets.BACKEND_HEALTH_URL != '' }}
         shell: bash
         env:
           HEALTH_URL: ${{ secrets.BACKEND_HEALTH_URL }}
         run: |
           set -euo pipefail
+          if [ -z "${HEALTH_URL:-}" ]; then
+            echo "No BACKEND_HEALTH_URL provided; skipping health check."
+            exit 0
+          fi
           echo "Waiting for backend health at $HEALTH_URL"
           for i in {1..60}; do
             code=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo 000)
