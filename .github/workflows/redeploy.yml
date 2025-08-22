@@ -12,8 +12,13 @@ on:
 
 env:
   RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+  # Backend project/env
   RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
   RAILWAY_ENV_ID: ${{ secrets.RAILWAY_ENV_ID }}
+  # Frontend project/env (optional separate project)
+  FRONTEND_PROJECT_ID: ${{ secrets.RAILWAY_FRONTEND_PROJECT_ID }}
+  FRONTEND_ENV_ID: ${{ secrets.RAILWAY_FRONTEND_ENV_ID }}
+  # Services
   BACKEND_SERVICE_ID: ${{ github.event.inputs.backend_service_id != '' && github.event.inputs.backend_service_id || secrets.RAILWAY_BACKEND_SERVICE_ID }}
   FRONTEND_SERVICE_ID: ${{ github.event.inputs.frontend_service_id != '' && github.event.inputs.frontend_service_id || secrets.RAILWAY_FRONTEND_SERVICE_ID }}
 
@@ -32,7 +37,7 @@ jobs:
           curl -fsSL https://railway.app/install.sh | sh
           echo "$HOME/.railway/bin" >> "$GITHUB_PATH"
 
-      - name: Link Railway project & environment
+      - name: Link backend project & environment
         shell: bash
         env:
           RAILWAY_PROJECT_ID: ${{ env.RAILWAY_PROJECT_ID }}
@@ -78,6 +83,23 @@ jobs:
           echo "Backend did not become healthy in time." >&2
           exit 1
 
+      - name: Link frontend project & environment (if separate)
+        shell: bash
+        env:
+          FRONTEND_PROJECT_ID: ${{ env.FRONTEND_PROJECT_ID }}
+          FRONTEND_ENV_ID: ${{ env.FRONTEND_ENV_ID }}
+        run: |
+          set -euo pipefail
+          if [ -n "${FRONTEND_PROJECT_ID:-}" ]; then
+            echo "Linking to frontend project $FRONTEND_PROJECT_ID and environment $FRONTEND_ENV_ID"
+            railway link --project "$FRONTEND_PROJECT_ID" || true
+            if [ -n "${FRONTEND_ENV_ID:-}" ]; then
+              railway link --environment "$FRONTEND_ENV_ID" || true
+            fi
+          else
+            echo "FRONTEND_PROJECT_ID not set; continuing with current linked project."
+          fi
+
       - name: Deploy frontend (detached)
         id: deploy_frontend
         shell: bash
@@ -85,9 +107,9 @@ jobs:
           FRONTEND_SERVICE_ID: ${{ env.FRONTEND_SERVICE_ID }}
         run: |
           set -euo pipefail
-          echo "Deploying frontend from app/frontend (context-based)"
-          cd app/frontend
-          railway up --detach
+          echo "Deploying frontend to service: $FRONTEND_SERVICE_ID"
+          cd app/frontend || true
+          railway up --service "$FRONTEND_SERVICE_ID" --detach
 
       - name: Summary
         if: always()
