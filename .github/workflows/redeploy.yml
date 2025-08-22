@@ -52,9 +52,8 @@ jobs:
           BACKEND_SERVICE_ID: ${{ env.BACKEND_SERVICE_ID }}
         run: |
           set -euo pipefail
-          echo "Deploying backend service: $BACKEND_SERVICE_ID"
-          railway up --service "$BACKEND_SERVICE_ID" --detach \
-            || railway deploy --service "$BACKEND_SERVICE_ID" --detach
+          echo "Deploying backend from repository root (context-based)"
+          railway up --detach
 
       - name: Wait for backend health (optional)
         shell: bash
@@ -86,9 +85,9 @@ jobs:
           FRONTEND_SERVICE_ID: ${{ env.FRONTEND_SERVICE_ID }}
         run: |
           set -euo pipefail
-          echo "Deploying frontend service: $FRONTEND_SERVICE_ID"
-          railway up --service "$FRONTEND_SERVICE_ID" --detach \
-            || railway deploy --service "$FRONTEND_SERVICE_ID" --detach
+          echo "Deploying frontend from app/frontend (context-based)"
+          cd app/frontend
+          railway up --detach
 
       - name: Summary
         if: always()
