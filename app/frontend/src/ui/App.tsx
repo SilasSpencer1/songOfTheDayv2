@@ -92,10 +92,8 @@ export function App() {
   }
 
   const onClearCache = async () => {
-    try { await axios.post(`${API_BASE}/auth/logout`, {}, { withCredentials: true }) } catch {}
     try { localStorage.clear(); sessionStorage.clear() } catch {}
-    // Sign out of Spotify in the SAME tab to avoid SSO reuse
-    window.location.href = 'https://accounts.spotify.com/logout'
+    window.location.href = `${API_BASE}/auth/switch`
   }
 
   return (

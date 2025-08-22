@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from typing import Optional, Dict, Any, Tuple, List
 
 from fastapi import FastAPI, Depends, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import math
@@ -472,6 +472,44 @@ async def auth_logout(request: Request) -> Response:
     )
     return resp
 
+
+@app.get("/auth/switch")
+async def auth_switch(request: Request) -> Response:
+    # Clear any existing session server-side and expire cookies, then force a Spotify logout
+    sid = request.cookies.get(SESSION_COOKIE) or request.cookies.get(''+(LEGACY_SESSION_COOKIE if 'LEGACY_SESSION_COOKIE' in globals() else '')+'')
+    if sid:
+        try:
+            await delete_session(sid)
+        except Exception:
+            pass
+    html = """
+<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Cache-Control\" content=\"no-store\"/></head>
+<body>
+<p style=\"font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif;\">Switching Spotify account…</p>
+<script>
+  (function(){
+    try{
+      var f=document.createElement('iframe');
+      f.style.display='none';
+      f.src='https://accounts.spotify.com/logout';
+      document.body.appendChild(f);
+    }catch(e){}
+    setTimeout(function(){ window.location.replace('/auth/login?force=1'); }, 1200);
+  })();
+  </script>
+</body></html>
+"""
+    resp = HTMLResponse(html)
+    try:
+        resp.set_cookie(key=SESSION_COOKIE, value="", httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=0, path="/")
+    except Exception:
+        pass
+    try:
+        if 'LEGACY_SESSION_COOKIE' in globals():
+            resp.set_cookie(key=LEGACY_SESSION_COOKIE, value="", httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=0, path="/")
+    except Exception:
+        pass
+    return resp
 
 # /api/me to show minimal profile info and premium flag
 @app.get("/api/me")
