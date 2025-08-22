@@ -329,6 +329,13 @@ async def auth_login(request: Request) -> Response:
     # If force=1, show Spotify login/consent dialog even if already signed-in
     force = request.query_params.get("force") in {"1", "true", "True"}
     auth = make_auth(show_dialog=bool(force))
+    # Proactively clear any existing server-side session and cookie to avoid stale identity reuse
+    old_sid = request.cookies.get(SESSION_COOKIE) or request.cookies.get(''+(LEGACY_SESSION_COOKIE if 'LEGACY_SESSION_COOKIE' in globals() else '')+'')
+    if old_sid:
+        try:
+            await delete_session(old_sid)
+        except Exception:
+            pass
     # CSRF state
     state = secrets.token_urlsafe(16)
     url = auth.get_authorize_url(state=state)  # type: ignore
@@ -345,6 +352,16 @@ async def auth_login(request: Request) -> Response:
         max_age=300,
         path="/",
     )
+    # Expire any existing session cookies before redirecting
+    try:
+        resp.set_cookie(key=SESSION_COOKIE, value="", httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=0, path="/")
+    except Exception:
+        pass
+    try:
+        if 'LEGACY_SESSION_COOKIE' in globals():
+            resp.set_cookie(key=LEGACY_SESSION_COOKIE, value="", httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=0, path="/")
+    except Exception:
+        pass
     return resp
 
 
