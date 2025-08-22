@@ -361,7 +361,13 @@ async def auth_callback(request: Request) -> Response:
         return JSONResponse({"error": "Invalid state"}, status_code=400)
 
     auth = make_auth()
-    token_info = auth.get_access_token(code, as_dict=True)  # type: ignore
+    try:
+        token_info = auth.get_access_token(code, as_dict=True)  # type: ignore
+    except Exception as e:
+        # Surface the OAuth failure instead of 500, to diagnose env/redirect issues
+        return JSONResponse({"error": "oauth_token_exchange_failed", "detail": str(e)}, status_code=400)
+    if not token_info or not token_info.get("access_token"):
+        return JSONResponse({"error": "oauth_token_missing", "detail": str(token_info)}, status_code=400)
     # Fetch Spotify user identity to bind sessions and history per user
     sp_user = spotipy.Spotify(auth=token_info["access_token"])  # type: ignore
     me = sp_user.me()
