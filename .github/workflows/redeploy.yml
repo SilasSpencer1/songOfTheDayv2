@@ -32,18 +32,29 @@ jobs:
           curl -fsSL https://railway.app/install.sh | sh
           echo "$HOME/.railway/bin" >> "$GITHUB_PATH"
 
-      - name: Deploy backend (detached)
-        id: deploy_backend
+      - name: Link Railway project & environment
         shell: bash
         env:
           RAILWAY_PROJECT_ID: ${{ env.RAILWAY_PROJECT_ID }}
           RAILWAY_ENV_ID: ${{ env.RAILWAY_ENV_ID }}
+        run: |
+          set -euo pipefail
+          echo "Linking to project $RAILWAY_PROJECT_ID and environment $RAILWAY_ENV_ID"
+          railway link --project "$RAILWAY_PROJECT_ID" || true
+          if [ -n "${RAILWAY_ENV_ID:-}" ]; then
+            railway link --environment "$RAILWAY_ENV_ID" || true
+          fi
+
+      - name: Deploy backend (detached)
+        id: deploy_backend
+        shell: bash
+        env:
           BACKEND_SERVICE_ID: ${{ env.BACKEND_SERVICE_ID }}
         run: |
           set -euo pipefail
           echo "Deploying backend service: $BACKEND_SERVICE_ID"
-          railway up --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENV_ID" --service "$BACKEND_SERVICE_ID" --detach \
-            || railway deploy --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENV_ID" --service "$BACKEND_SERVICE_ID" --detach
+          railway up --service "$BACKEND_SERVICE_ID" --detach \
+            || railway deploy --service "$BACKEND_SERVICE_ID" --detach
 
       - name: Wait for backend health (optional)
         shell: bash
@@ -72,14 +83,12 @@ jobs:
         id: deploy_frontend
         shell: bash
         env:
-          RAILWAY_PROJECT_ID: ${{ env.RAILWAY_PROJECT_ID }}
-          RAILWAY_ENV_ID: ${{ env.RAILWAY_ENV_ID }}
           FRONTEND_SERVICE_ID: ${{ env.FRONTEND_SERVICE_ID }}
         run: |
           set -euo pipefail
           echo "Deploying frontend service: $FRONTEND_SERVICE_ID"
-          railway up --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENV_ID" --service "$FRONTEND_SERVICE_ID" --detach \
-            || railway deploy --project "$RAILWAY_PROJECT_ID" --environment "$RAILWAY_ENV_ID" --service "$FRONTEND_SERVICE_ID" --detach
+          railway up --service "$FRONTEND_SERVICE_ID" --detach \
+            || railway deploy --service "$FRONTEND_SERVICE_ID" --detach
 
       - name: Summary
         if: always()
