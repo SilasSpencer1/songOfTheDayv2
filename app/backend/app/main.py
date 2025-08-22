@@ -43,8 +43,9 @@ LOGIN_SCOPES = " ".join([
     "playlist-modify-private",
 ])
 
-# Cookie names
-SESSION_COOKIE = f"{APP_NAME}_sid"
+# Cookie names: prefer host-only __Host- cookie to avoid parent-domain collisions
+SESSION_COOKIE = f"__Host-{APP_NAME}_sid"
+LEGACY_SESSION_COOKIE = f"{APP_NAME}_sid"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 COOKIE_SECURE = APP_BASE_URL.startswith("https://")
 # Use SameSite=None for cross-site (production, https), Lax for local dev
@@ -304,7 +305,8 @@ async def refresh_if_needed(session: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def require_session(request: Request) -> Dict[str, Any]:
-    sid = request.cookies.get(SESSION_COOKIE)
+    # Prefer the new host-only cookie; fall back to legacy name if present
+    sid = request.cookies.get(SESSION_COOKIE) or request.cookies.get(LEGACY_SESSION_COOKIE)
     if not sid:
         raise HTTPException(status_code=401, detail="Not logged in")
     session = await get_session(sid)
@@ -411,6 +413,7 @@ async def auth_callback(request: Request) -> Response:
         max_age=0,
         path="/",
     )
+    # Set new host-only session cookie
     resp.set_cookie(
         key=SESSION_COOKIE,
         value=session_id,
@@ -420,18 +423,37 @@ async def auth_callback(request: Request) -> Response:
         max_age=COOKIE_MAX_AGE,
         path="/",
     )
+    # Proactively expire legacy cookie name if sent by the browser
+    resp.set_cookie(
+        key=LEGACY_SESSION_COOKIE,
+        value="",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=0,
+        path="/",
+    )
     return resp
 
 
 @app.post("/auth/logout")
 async def auth_logout(request: Request) -> Response:
-    sid = request.cookies.get(SESSION_COOKIE)
+    sid = request.cookies.get(SESSION_COOKIE) or request.cookies.get(LEGACY_SESSION_COOKIE)
     if sid:
         await delete_session(sid)
     resp = JSONResponse({"ok": True})
     # Expire the cookie(s)
     resp.set_cookie(
         key=SESSION_COOKIE,
+        value="",
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=0,
+        path="/",
+    )
+    resp.set_cookie(
+        key=LEGACY_SESSION_COOKIE,
         value="",
         httponly=True,
         secure=COOKIE_SECURE,
