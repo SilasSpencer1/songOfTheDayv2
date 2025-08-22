@@ -40,6 +40,7 @@ jobs:
       - name: Link backend project & environment
         shell: bash
         env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_PROJECT_ID: ${{ env.RAILWAY_PROJECT_ID }}
           RAILWAY_ENV_ID: ${{ env.RAILWAY_ENV_ID }}
         run: |
@@ -54,6 +55,7 @@ jobs:
         id: deploy_backend
         shell: bash
         env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           BACKEND_SERVICE_ID: ${{ env.BACKEND_SERVICE_ID }}
         run: |
           set -euo pipefail
@@ -86,6 +88,7 @@ jobs:
       - name: Link frontend project & environment (if separate)
         shell: bash
         env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_FRONTEND_TOKEN != '' && secrets.RAILWAY_FRONTEND_TOKEN || secrets.RAILWAY_TOKEN }}
           FRONTEND_PROJECT_ID: ${{ env.FRONTEND_PROJECT_ID }}
           FRONTEND_ENV_ID: ${{ env.FRONTEND_ENV_ID }}
         run: |
@@ -104,6 +107,7 @@ jobs:
         id: deploy_frontend
         shell: bash
         env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_FRONTEND_TOKEN != '' && secrets.RAILWAY_FRONTEND_TOKEN || secrets.RAILWAY_TOKEN }}
           FRONTEND_SERVICE_ID: ${{ env.FRONTEND_SERVICE_ID }}
         run: |
           set -euo pipefail
