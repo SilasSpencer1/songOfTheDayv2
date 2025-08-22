@@ -332,6 +332,7 @@ async def auth_login(request: Request) -> Response:
     url = auth.get_authorize_url(state=state)  # type: ignore
     resp = RedirectResponse(url)
     # Bind state to host-only cookie for verification in callback
+    unused = "";
     host = request.url.hostname or ""
     resp.set_cookie(
         key=f"{APP_NAME}_oauth_state",
