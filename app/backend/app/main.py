@@ -369,10 +369,15 @@ async def auth_callback(request: Request) -> Response:
     if not token_info or not token_info.get("access_token"):
         return JSONResponse({"error": "oauth_token_missing", "detail": str(token_info)}, status_code=400)
     # Fetch Spotify user identity to bind sessions and history per user
-    sp_user = spotipy.Spotify(auth=token_info["access_token"])  # type: ignore
-    me = sp_user.me()
-    user_id = me.get("id")
-    display_name = me.get("display_name") or user_id
+    try:
+        sp_user = spotipy.Spotify(auth=token_info["access_token"])  # type: ignore
+        me = sp_user.me()
+    except Exception as e:
+        return JSONResponse({"error": "spotify_me_failed", "detail": str(e)}, status_code=400)
+    user_id = (me or {}).get("id")
+    display_name = (me or {}).get("display_name") or user_id
+    if not user_id:
+        return JSONResponse({"error": "spotify_me_missing_user"}, status_code=400)
 
     session_id = secrets.token_urlsafe(24)
     await save_session(
