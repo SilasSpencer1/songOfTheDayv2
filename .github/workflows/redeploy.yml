@@ -52,8 +52,8 @@ jobs:
           BACKEND_SERVICE_ID: ${{ env.BACKEND_SERVICE_ID }}
         run: |
           set -euo pipefail
-          echo "Deploying backend from repository root (context-based)"
-          railway up --detach
+          echo "Deploying backend to service: $BACKEND_SERVICE_ID"
+          railway up --service "$BACKEND_SERVICE_ID" --detach
 
       - name: Wait for backend health (optional)
         shell: bash
