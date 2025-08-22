@@ -32,15 +32,6 @@ jobs:
           curl -fsSL https://railway.app/install.sh | sh
           echo "$HOME/.railway/bin" >> "$GITHUB_PATH"
 
-      - name: Auth with Railway
-        shell: bash
-        env:
-          RAILWAY_TOKEN: ${{ env.RAILWAY_TOKEN }}
-        run: |
-          set -euo pipefail
-          railway login --token "$RAILWAY_TOKEN"
-          railway whoami || true
-
       - name: Deploy backend (detached)
         id: deploy_backend
         shell: bash
