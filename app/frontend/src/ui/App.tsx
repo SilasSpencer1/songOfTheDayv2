@@ -29,6 +29,8 @@ export function App() {
   const [albumBg, setAlbumBg] = useState<string | null>(null)
   const [showAbout, setShowAbout] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [restarting, setRestarting] = useState(false)
+  const [restartMsg, setRestartMsg] = useState<string>('Restarting server…')
 
   useEffect(() => {
     ;(async () => {
@@ -42,6 +44,7 @@ export function App() {
   }, [])
 
   const onLogin = () => {
+    if (restarting) return
     // Force a fresh Spotify auth dialog to avoid silently reusing a cached login
     window.location.href = `${API_BASE}/auth/login?force=1`
   }
@@ -86,14 +89,37 @@ export function App() {
     }
   }
 
+  const waitForHealth = async (timeoutMs = 90000) => {
+    setRestarting(true)
+    setRestartMsg('Restarting server…')
+    const start = Date.now()
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const r = await axios.get(`${API_BASE}/health`, { timeout: 5000 })
+        if (r.status === 200) {
+          setRestartMsg('Back online. You can connect again.')
+          setMe(null)
+          setRec(null)
+          setTimeout(() => setRestarting(false), 1200)
+          return
+        }
+      } catch (e) {
+        // server may be restarting; ignore
+      }
+      await new Promise(res => setTimeout(res, 2000))
+    }
+    setRestartMsg('Taking longer than expected. Try refreshing in a moment…')
+  }
+
   const onLogout = async () => {
     try { await axios.post(`${API_BASE}/auth/logout`, {}, { withCredentials: true }) } catch {}
-    window.location.reload()
+    await waitForHealth()
   }
 
   const onClearCache = async () => {
     try { localStorage.clear(); sessionStorage.clear() } catch {}
-    window.location.href = `${API_BASE}/auth/switch`
+    try { await axios.post(`${API_BASE}/auth/logout`, {}, { withCredentials: true }) } catch {}
+    await waitForHealth()
   }
 
   return (
@@ -137,7 +163,7 @@ export function App() {
           </div>
         )}
       {!me ? (
-        <LoginGate onLogin={onLogin} />
+        <LoginGate onLogin={onLogin} disabled={restarting} status={restarting ? restartMsg : null} />
       ) : (
         <div style={{ display:'grid', gridTemplateColumns:'1fr', gap:16, marginTop:16, position: 'relative', zIndex: 1 }}>
           <div className="glass fade-up" style={{ padding:16 }}>
@@ -153,15 +179,24 @@ export function App() {
         </div>
       )}
       </div>
+      {restarting && (
+        <div style={{ position:'fixed', inset:0, backdropFilter:'blur(4px)', background:'rgba(0,0,0,0.35)', display:'flex', alignItems:'center', justifyContent:'center', zIndex: 10 }}>
+          <div className="glass" style={{ padding:16, minWidth:280, textAlign:'center' }}>
+            <div style={{ marginBottom:8 }}>🔄 {restartMsg}</div>
+            <div style={{ fontSize:12, opacity:.85 }}>We’ll re-enable Connect Spotify once the server is ready.</div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-function LoginGate({ onLogin }: { onLogin: () => void }) {
+function LoginGate({ onLogin, disabled, status }: { onLogin: () => void; disabled?: boolean; status?: string | null }) {
   return (
     <div className="glass" style={{ display: 'flex', flexDirection: 'column', gap: 12, padding:16, marginTop:16 }}>
       <p>Connect your Spotify account to get a daily recommendation.</p>
-      <button onClick={onLogin} className="btn">Connect Spotify</button>
+      <button onClick={onLogin} disabled={!!disabled} className="btn">{disabled ? 'Please wait…' : 'Connect Spotify'}</button>
+      {status && <div style={{ fontSize:12, opacity:.85 }}>{status}</div>}
     </div>
   )
 }

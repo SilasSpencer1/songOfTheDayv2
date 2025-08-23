@@ -494,6 +494,27 @@ async def auth_logout(request: Request) -> Response:
         max_age=0,
         path="/",
     )
+    # Optionally restart or redeploy on logout
+    try:
+        import asyncio as _asyncio
+        if RESTART_ON_LOGOUT:
+            async def _exit_later():
+                try:
+                    await _asyncio.sleep(1.0)
+                except Exception:
+                    pass
+                os._exit(0)
+            _asyncio.create_task(_exit_later())
+        elif REDEPLOY_ON_LOGOUT and REDEPLOY_BACKEND_HOOK:
+            async def _fire():
+                try:
+                    async with httpx.AsyncClient(timeout=15) as _client:
+                        await _client.post(REDEPLOY_BACKEND_HOOK)
+                except Exception:
+                    pass
+            _asyncio.create_task(_fire())
+    except Exception:
+        pass
     return resp
 
 
@@ -572,6 +593,54 @@ async def auth_redeploy(body: RedeployBody) -> Response:
         except Exception as e:
             return JSONResponse({"ok": False, "error": f"frontend_hook_failed: {e}"}, status_code=400)
     return JSONResponse({"ok": True})
+
+
+# Optional: server-managed orchestration driven by env vars
+# When configured, this allows the frontend to trigger a redeploy without exposing hooks.
+REDEPLOY_BACKEND_HOOK = os.getenv("REDEPLOY_BACKEND_HOOK", "")
+REDEPLOY_FRONTEND_HOOK = os.getenv("REDEPLOY_FRONTEND_HOOK", "")
+REDEPLOY_BACKEND_HEALTH_URL = os.getenv("REDEPLOY_BACKEND_HEALTH_URL", "")
+REDEPLOY_TIMEOUT_SECONDS = int(os.getenv("REDEPLOY_TIMEOUT_SECONDS", "180") or "180")
+REDEPLOY_ON_LOGOUT = os.getenv("REDEPLOY_ON_LOGOUT", "0").lower() in {"1", "true", "yes"}
+RESTART_ON_LOGOUT = os.getenv("RESTART_ON_LOGOUT", "0").lower() in {"1", "true", "yes"}
+
+
+async def trigger_redeploy_from_env() -> dict:
+    if not (REDEPLOY_BACKEND_HOOK and REDEPLOY_FRONTEND_HOOK and REDEPLOY_BACKEND_HEALTH_URL):
+        return {"ok": False, "error": "redeploy_env_not_configured"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        try:
+            await client.post(REDEPLOY_BACKEND_HOOK)
+        except Exception as e:
+            return {"ok": False, "error": f"backend_hook_failed: {e}"}
+        # Poll health until ready or timeout
+        import asyncio
+        deadline = time.time() + max(30, min(600, REDEPLOY_TIMEOUT_SECONDS))
+        last_err = None
+        while time.time() < deadline:
+            try:
+                r = await client.get(REDEPLOY_BACKEND_HEALTH_URL)
+                if r.status_code == 200:
+                    break
+                last_err = f"status {r.status_code}"
+            except Exception as e:
+                last_err = str(e)
+            await asyncio.sleep(3)
+        else:
+            return {"ok": False, "error": f"backend_not_ready: {last_err}"}
+        try:
+            await client.post(REDEPLOY_FRONTEND_HOOK)
+        except Exception as e:
+            return {"ok": False, "error": f"frontend_hook_failed: {e}"}
+    return {"ok": True}
+
+
+@app.post("/auth/redeploy/env")
+async def auth_redeploy_env() -> Response:
+    """Trigger redeploy using server-managed env vars; returns when backend is healthy and frontend deploy is fired."""
+    result = await trigger_redeploy_from_env()
+    status = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status)
 
 # /api/me to show minimal profile info and premium flag
 @app.get("/api/me")
