@@ -45,8 +45,8 @@ export function App() {
 
   const onLogin = () => {
     if (restarting) return
-    // Force a fresh Spotify auth dialog to avoid silently reusing a cached login
-    window.location.href = `${API_BASE}/auth/login?force=1`
+    // Force a real account switch: clears server session and logs out of Spotify Accounts
+    window.location.href = `${API_BASE}/auth/switch`
   }
 
   const onRecommend = async () => {
