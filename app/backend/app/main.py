@@ -44,13 +44,19 @@ LOGIN_SCOPES = " ".join([
     "playlist-modify-private",
 ])
 
-# Cookie names: prefer host-only __Host- cookie to avoid parent-domain collisions
-SESSION_COOKIE = f"__Host-{APP_NAME}_sid"
-LEGACY_SESSION_COOKIE = f"{APP_NAME}_sid"
+# Cookie configuration
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 COOKIE_SECURE = APP_BASE_URL.startswith("https://")
 # Use SameSite=None for cross-site (production, https), Lax for local dev
 COOKIE_SAMESITE = "none" if COOKIE_SECURE else "lax"
+
+# Cookie names: use __Host- prefix only when secure (https), otherwise use regular name
+if COOKIE_SECURE:
+    SESSION_COOKIE = f"__Host-{APP_NAME}_sid"
+    LEGACY_SESSION_COOKIE = f"{APP_NAME}_sid"
+else:
+    SESSION_COOKIE = f"{APP_NAME}_sid"
+    LEGACY_SESSION_COOKIE = f"{APP_NAME}_sid_legacy"
 
 # Database path
 DB_PATH_RAW = os.getenv("DATABASE_PATH", "./app/backend/app/data.db")
@@ -320,6 +326,8 @@ async def require_session(request: Request) -> Dict[str, Any]:
     if not session:
         raise HTTPException(status_code=401, detail="Invalid session")
     session = await refresh_if_needed(session)
+    # Add debug info to help diagnose cross-user issues
+    print(f"DEBUG: Session {sid[:8]}... for user {session.get('user_id')} ({session.get('display_name')})")
     return session
 
 
@@ -337,7 +345,7 @@ async def auth_login(request: Request) -> Response:
     force = request.query_params.get("force") in {"1", "true", "True"}
     auth = make_auth(show_dialog=bool(force))
     # Proactively clear any existing server-side session and cookie to avoid stale identity reuse
-    old_sid = request.cookies.get(SESSION_COOKIE) or request.cookies.get(''+(LEGACY_SESSION_COOKIE if 'LEGACY_SESSION_COOKIE' in globals() else '')+'')
+    old_sid = request.cookies.get(SESSION_COOKIE) or request.cookies.get(LEGACY_SESSION_COOKIE)
     if old_sid:
         try:
             await delete_session(old_sid)
@@ -365,8 +373,7 @@ async def auth_login(request: Request) -> Response:
     except Exception:
         pass
     try:
-        if 'LEGACY_SESSION_COOKIE' in globals():
-            resp.set_cookie(key=LEGACY_SESSION_COOKIE, value="", httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=0, path="/")
+        resp.set_cookie(key=LEGACY_SESSION_COOKIE, value="", httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=0, path="/")
     except Exception:
         pass
     return resp
@@ -521,7 +528,7 @@ async def auth_logout(request: Request) -> Response:
 @app.get("/auth/switch")
 async def auth_switch(request: Request) -> Response:
     # Clear any existing session server-side and expire cookies, then force a Spotify logout
-    sid = request.cookies.get(SESSION_COOKIE) or request.cookies.get(''+(LEGACY_SESSION_COOKIE if 'LEGACY_SESSION_COOKIE' in globals() else '')+'')
+    sid = request.cookies.get(SESSION_COOKIE) or request.cookies.get(LEGACY_SESSION_COOKIE)
     if sid:
         try:
             await delete_session(sid)
@@ -550,8 +557,7 @@ async def auth_switch(request: Request) -> Response:
     except Exception:
         pass
     try:
-        if 'LEGACY_SESSION_COOKIE' in globals():
-            resp.set_cookie(key=LEGACY_SESSION_COOKIE, value="", httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=0, path="/")
+        resp.set_cookie(key=LEGACY_SESSION_COOKIE, value="", httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=0, path="/")
     except Exception:
         pass
     return resp
