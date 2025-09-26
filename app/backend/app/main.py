@@ -412,6 +412,18 @@ async def auth_callback(request: Request) -> Response:
     if not user_id:
         return JSONResponse({"error": "spotify_me_missing_user"}, status_code=400)
 
+    # Check if this is the same user as any existing session (potential account reuse)
+    # If coming from /auth/switch, we should expect a different user
+    existing_sid = request.cookies.get(SESSION_COOKIE) or request.cookies.get(LEGACY_SESSION_COOKIE)
+    if existing_sid:
+        existing_session = await get_session(existing_sid)
+        if existing_session and existing_session.get("user_id") == user_id:
+            # Same user returned from OAuth - Spotify didn't switch accounts
+            # Force them to try again with explicit logout
+            print(f"WARNING: OAuth returned same user {user_id} - need to switch accounts")
+            # Instead of error, redirect them to the switch flow
+            return RedirectResponse("/auth/switch")
+
     session_id = secrets.token_urlsafe(24)
     await save_session(
         session_id,
@@ -534,32 +546,62 @@ async def auth_switch(request: Request) -> Response:
             await delete_session(sid)
         except Exception:
             pass
+    
     html = """
 <!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Cache-Control\" content=\"no-store\"/></head>
 <body>
-<p style=\"font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif;\">Switching Spotify account…</p>
+<div style=\"font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif; padding: 20px; text-align: center;\">
+  <h2>Switch Spotify Account</h2>
+  <p>To ensure you can log in with a different Spotify account:</p>
+  <ol style=\"text-align: left; max-width: 400px; margin: 0 auto;\">
+    <li>Click the button below to log out of Spotify</li>
+    <li>When Spotify's logout page loads, you may see a login form</li>
+    <li>Do NOT log in - instead, close that tab/window</li>
+    <li>Come back to this tab and click "Continue to Login"</li>
+  </ol>
+  <div style=\"margin: 20px 0;\">
+    <button onclick=\"logoutSpotify()\" style=\"padding: 10px 20px; margin: 10px; font-size: 16px; background: #1db954; color: white; border: none; border-radius: 5px; cursor: pointer;\">1. Logout of Spotify</button>
+  </div>
+  <div style=\"margin: 20px 0;\">
+    <button onclick=\"continueLogin()\" style=\"padding: 10px 20px; margin: 10px; font-size: 16px; background: #1976d2; color: white; border: none; border-radius: 5px; cursor: pointer;\">2. Continue to Login</button>
+  </div>
+  <p style=\"font-size: 14px; color: #666;\">This ensures you can select a different Spotify account.</p>
+</div>
 <script>
-  (function(){
+  function logoutSpotify() {
+    // Open Spotify logout in a new tab
+    window.open('https://accounts.spotify.com/logout', '_blank');
+  }
+  
+  function continueLogin() {
+    // Clear any local storage
     try{
-      var f=document.createElement('iframe');
-      f.style.display='none';
-      f.src='https://accounts.spotify.com/logout';
-      document.body.appendChild(f);
+      if (window.localStorage) {
+        Object.keys(localStorage).forEach(key => {
+          if (key.includes('spotify') || key.includes('Spotify')) {
+            localStorage.removeItem(key);
+          }
+        });
+      }
+      if (window.sessionStorage) {
+        Object.keys(sessionStorage).forEach(key => {
+          if (key.includes('spotify') || key.includes('Spotify')) {
+            sessionStorage.removeItem(key);
+          }
+        });
+      }
     }catch(e){}
-    setTimeout(function(){ window.location.replace('/auth/login?force=1'); }, 1200);
-  })();
-  </script>
+    
+    // Redirect to forced login
+    window.location.href = '/auth/login?force=1';
+  }
+</script>
 </body></html>
 """
     resp = HTMLResponse(html)
-    try:
-        resp.set_cookie(key=SESSION_COOKIE, value="", httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=0, path="/")
-    except Exception:
-        pass
-    try:
-        resp.set_cookie(key=LEGACY_SESSION_COOKIE, value="", httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=0, path="/")
-    except Exception:
-        pass
+    # Clear session cookies
+    resp.set_cookie(key=SESSION_COOKIE, value="", httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=0, path="/")
+    resp.set_cookie(key=LEGACY_SESSION_COOKIE, value="", httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE, max_age=0, path="/")
     return resp
 
 

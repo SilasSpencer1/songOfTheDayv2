@@ -45,8 +45,13 @@ export function App() {
 
   const onLogin = () => {
     if (restarting) return
-    // Force a real account switch: clears server session and logs out of Spotify Accounts
-    window.location.href = `${API_BASE}/auth/switch`
+    // Check if user is already logged in - if so, use switch flow
+    if (me) {
+      window.location.href = `${API_BASE}/auth/switch`
+    } else {
+      // First time login - try direct login first
+      window.location.href = `${API_BASE}/auth/login?force=1`
+    }
   }
 
   const onRecommend = async () => {
